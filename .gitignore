@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Data & outputs (NEVER COMMIT)
+*.csv
+*.parquet
+*.xlsx
+*.pbix
+data/
+outputs/
+Drive/
+.env
+paths.yaml
