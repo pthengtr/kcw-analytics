@@ -758,7 +758,8 @@ def get_weighted_avg_purchase_unit_cost_all_time(
 def build_inventory_summary_avg_cost(
     in_dfs: list[pd.DataFrame],
     out_dfs: list[pd.DataFrame],
-    pidet_all_df: pd.DataFrame,   # ALL PIDET, no year limit
+    pidet_all_df: pd.DataFrame,    # ALL PIDET, no year limit
+    products_df: pd.DataFrame,     # from raw_hq_icmas_products.csv
 ) -> pd.DataFrame:
     """
     Output:
@@ -769,6 +770,7 @@ def build_inventory_summary_avg_cost(
     - IN/OUT are in UNITS = QTY * MTP
     - AV_COST = weighted average from ALL PIDET history:
         sum(PRICE) / sum(MTP) per BCODE
+    - DESCR comes from products_df (raw_hq_icmas_products.csv)
     """
 
     def _sum_units(dfs):
@@ -795,12 +797,20 @@ def build_inventory_summary_avg_cost(
     # avg cost from ALL PIDET (weighted)
     avg_cost = get_weighted_avg_purchase_unit_cost_all_time(pidet_all_df)
 
-    # 🔹 DESCR from DETAIL (PIDET)
+    # 🔹 DESCR from products master (raw_hq_icmas_products.csv)
+    p = _clean_columns(products_df.copy())
+    p = _drop_invalid_bcode(p, "BCODE")
+
+    # adjust this if your products file uses a different column name
+    # common candidates: "DESCR", "DETAIL", "NAME", "PDNAME"
+    descr_col = "DESCR" if "DESCR" in p.columns else ("DETAIL" if "DETAIL" in p.columns else None)
+    if descr_col is None:
+        raise KeyError(f"products_df must contain a description column (e.g., DESCR or DETAIL). Found: {list(p.columns)}")
+
     descr_map = (
-        _clean_columns(pidet_all_df.copy())
-        .dropna(subset=["BCODE", "DETAIL"])
-        .drop_duplicates(subset=["BCODE"])
-        .set_index("BCODE")["DETAIL"]
+        p.dropna(subset=["BCODE", descr_col])
+         .drop_duplicates(subset=["BCODE"], keep="first")
+         .set_index("BCODE")[descr_col]
     )
 
     result = pd.DataFrame({"BCODE": movement_bcodes})
@@ -810,6 +820,7 @@ def build_inventory_summary_avg_cost(
     result["AV_COST"] = result["BCODE"].map(avg_cost)
 
     return result
+
 
 
 def _clean_columns(df: pd.DataFrame) -> pd.DataFrame:
