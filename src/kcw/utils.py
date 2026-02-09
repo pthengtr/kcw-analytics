@@ -755,11 +755,16 @@ def get_weighted_avg_purchase_unit_cost_all_time(
     return avg_cost
 
 
+import pandas as pd
+
 def build_inventory_summary_avg_cost(
     in_dfs: list[pd.DataFrame],
     out_dfs: list[pd.DataFrame],
-    pidet_all_df: pd.DataFrame,    # ALL PIDET, no year limit
-    products_df: pd.DataFrame,     # from raw_hq_icmas_products.csv
+    pidet_all_df: pd.DataFrame,      # ALL PIDET, no year limit
+    products_df: pd.DataFrame,       # raw_hq_icmas_products.csv loaded as df
+    *,
+    products_descr_col: str | None = None,  # set if you know the exact column name
+    fallback_to_pidet_detail: bool = True,  # fill missing DESCR using PIDET DETAIL
 ) -> pd.DataFrame:
     """
     Output:
@@ -770,20 +775,33 @@ def build_inventory_summary_avg_cost(
     - IN/OUT are in UNITS = QTY * MTP
     - AV_COST = weighted average from ALL PIDET history:
         sum(PRICE) / sum(MTP) per BCODE
-    - DESCR comes from products_df (raw_hq_icmas_products.csv)
+    - DESCR comes from products_df (product master). Optionally fallback to PIDET DETAIL.
     """
 
-    def _sum_units(dfs):
+    def _norm_bcode(s: pd.Series) -> pd.Series:
+        # normalize for matching (spaces, numeric-string artifacts)
+        return (
+            s.astype("string")
+             .str.strip()
+             .str.replace(r"\.0$", "", regex=True)
+        )
+
+    def _sum_units(dfs: list[pd.DataFrame]) -> pd.Series:
         parts = []
         for df in dfs:
             t = _drop_invalid_bcode(_clean_columns(df.copy()), "BCODE")
-            t["QTY"] = pd.to_numeric(t["QTY"], errors="coerce")
-            t["MTP"] = pd.to_numeric(t["MTP"], errors="coerce")
+            t["BCODE"] = _norm_bcode(t["BCODE"])
+
+            t["QTY"] = pd.to_numeric(t.get("QTY"), errors="coerce")
+            t["MTP"] = pd.to_numeric(t.get("MTP"), errors="coerce")
+
             t["UNITS"] = t["QTY"] * t["MTP"]
-            t = t.dropna(subset=["UNITS"])
+            t = t.dropna(subset=["BCODE", "UNITS"])
             parts.append(t[["BCODE", "UNITS"]])
+
         if not parts:
-            return pd.Series(dtype=float)
+            return pd.Series(dtype="float64")
+
         x = pd.concat(parts, ignore_index=True)
         return x.groupby("BCODE")["UNITS"].sum()
 
@@ -797,29 +815,66 @@ def build_inventory_summary_avg_cost(
     # avg cost from ALL PIDET (weighted)
     avg_cost = get_weighted_avg_purchase_unit_cost_all_time(pidet_all_df)
 
-    # 🔹 DESCR from products master (raw_hq_icmas_products.csv)
+    # -----------------------------
+    # DESCR from products master
+    # -----------------------------
     p = _clean_columns(products_df.copy())
     p = _drop_invalid_bcode(p, "BCODE")
+    p["BCODE"] = _norm_bcode(p["BCODE"])
 
-    # adjust this if your products file uses a different column name
-    # common candidates: "DESCR", "DETAIL", "NAME", "PDNAME"
-    descr_col = "DESCR" if "DESCR" in p.columns else ("DETAIL" if "DETAIL" in p.columns else None)
-    if descr_col is None:
-        raise KeyError(f"products_df must contain a description column (e.g., DESCR or DETAIL). Found: {list(p.columns)}")
+    # auto-detect description column if not provided
+    if products_descr_col is None:
+        candidates = ["DESCR", "DESCRIPTION", "DETAIL", "NAME", "PNAME", "PDNAME", "ITEMNAME"]
+        products_descr_col = next((c for c in candidates if c in p.columns), None)
+        if products_descr_col is None:
+            raise KeyError(
+                f"products_df must contain a description column. "
+                f"Tried {candidates}. Found: {list(p.columns)}"
+            )
 
-    descr_map = (
-        p.dropna(subset=["BCODE", descr_col])
+    p[products_descr_col] = p[products_descr_col].astype("string").str.strip()
+
+    descr_map_products = (
+        p.dropna(subset=["BCODE", products_descr_col])
          .drop_duplicates(subset=["BCODE"], keep="first")
-         .set_index("BCODE")[descr_col]
+         .set_index("BCODE")[products_descr_col]
     )
 
-    result = pd.DataFrame({"BCODE": movement_bcodes})
-    result["DESCR"] = result["BCODE"].map(descr_map)
+    # optional fallback DESCR from PIDET DETAIL
+    descr_map_pidet = None
+    if fallback_to_pidet_detail:
+        q = _clean_columns(pidet_all_df.copy())
+        if "BCODE" in q.columns and "DETAIL" in q.columns:
+            q = _drop_invalid_bcode(q, "BCODE")
+            q["BCODE"] = _norm_bcode(q["BCODE"])
+            q["DETAIL"] = q["DETAIL"].astype("string").str.strip()
+
+            descr_map_pidet = (
+                q.dropna(subset=["BCODE", "DETAIL"])
+                 .drop_duplicates(subset=["BCODE"], keep="first")
+                 .set_index("BCODE")["DETAIL"]
+            )
+
+    # build result
+    result = pd.DataFrame({"BCODE": pd.Series(movement_bcodes, dtype="string")})
+    result["BCODE"] = _norm_bcode(result["BCODE"])
+
+    result["DESCR"] = result["BCODE"].map(descr_map_products)
+
+    if fallback_to_pidet_detail and descr_map_pidet is not None:
+        # fill only missing descriptions
+        result["DESCR"] = result["DESCR"].fillna(result["BCODE"].map(descr_map_pidet))
+
     result["IN"] = result["BCODE"].map(in_units).fillna(0)
     result["OUT"] = result["BCODE"].map(out_units).fillna(0)
     result["AV_COST"] = result["BCODE"].map(avg_cost)
 
+    # Keep only movement BCODEs is already enforced, but ensure numeric types
+    result["IN"] = pd.to_numeric(result["IN"], errors="coerce").fillna(0)
+    result["OUT"] = pd.to_numeric(result["OUT"], errors="coerce").fillna(0)
+
     return result
+
 
 
 
