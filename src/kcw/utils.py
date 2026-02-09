@@ -1100,6 +1100,9 @@ def build_yearly_inventory_report(
     # --------------------
     # DESCR: prev first, then movement
     # --------------------
+    result["DESCR_PREV"] = result["DESCR_PREV"].astype("string")
+    result["DESCR_MOV"] = result["DESCR_MOV"].astype("string")
+
     result["DESCR"] = result["DESCR_PREV"].combine_first(result["DESCR_MOV"])
 
     # --------------------
