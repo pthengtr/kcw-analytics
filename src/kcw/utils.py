@@ -1059,38 +1059,60 @@ def get_ar_unpaid_bills(data: dict, year: int, site: str, show_summary: bool = T
 
     return out
 
+import pandas as pd
+
+
 def build_yearly_inventory_report(
     prev_year_inventory: pd.DataFrame | None,
     current_year_movement: pd.DataFrame,
     *,
     fix_negative_end: bool = True,
+    new_bcode_begin_cost_policy: str = "zero",  # "zero" or "blank"
 ) -> pd.DataFrame:
     """
-    Build new yearly inventory report.
+    Build yearly inventory report with explicit BEGIN valuation columns.
 
     Inputs
     ------
     prev_year_inventory : DataFrame | None
-        Columns (if provided):
-        BCODE, DESCR, END, AV_COST
+        Expected columns (if provided):
+            BCODE, DESCR, END, AV_COST
+        Meaning:
+            END     = previous year ending quantity (truth)
+            AV_COST = previous year average unit cost
 
     current_year_movement : DataFrame
-        Columns:
-        BCODE, DESCR, IN, OUT, AV_COST
+        Expected columns:
+            BCODE, DESCR, IN, OUT, AV_COST
+        Meaning:
+            IN/OUT  = current year movement qty (already in your unit definition)
+            AV_COST = current year average unit cost (optional; can be NaN)
 
-    Output
-    ------
-    BCODE, DESCR, BEGIN, IN, OUT, END, AV_COST, AMOUNT
+    Output columns
+    --------------
+    BCODE, DESCR,
+    BEGIN, BEGIN_AV_COST, BEGIN_AMOUNT,
+    IN, OUT, END, AV_COST, AMOUNT,
+    IN_ORIG, NEG_END_FIXED, IS_NEW_BCODE
 
     Rules
     -----
-    - If prev_year_inventory is None:
-        BEGIN = 0
-    - BEGIN   = prev END (truth source)
-    - IN/OUT  = current year movement (missing => 0)
-    - END     = BEGIN + IN - OUT
-    - AV_COST = movement AV_COST if available, else prev AV_COST
-    - AMOUNT  = END * AV_COST
+    - BEGIN = prev END (truth source). If no prev_year_inventory => BEGIN=0.
+    - IN/OUT come from movement; missing => 0.
+    - END = BEGIN + IN - OUT
+    - BEGIN_AV_COST comes from prev AV_COST (valuation of opening stock)
+    - BEGIN_AMOUNT = BEGIN * BEGIN_AV_COST
+    - AV_COST (for END valuation) = movement AV_COST if available else prev AV_COST
+    - AMOUNT = END * AV_COST
+
+    New BCODE policy
+    ----------------
+    If a BCODE is not present in prev_year_inventory:
+      - BEGIN = 0 always
+      - BEGIN_AV_COST:
+          * "zero"  => 0
+          * "blank" => pd.NA
+      - BEGIN_AMOUNT = 0 always
 
     Negative END rule (if fix_negative_end=True)
     --------------------------------------------
@@ -1098,8 +1120,12 @@ def build_yearly_inventory_report(
     - If END < 0:
         IN := OUT - BEGIN
         END := 0
-        AMOUNT recalculated
+        AMOUNT := 0
+        (BEGIN_* stays unchanged)
     """
+
+    if new_bcode_begin_cost_policy not in {"zero", "blank"}:
+        raise ValueError("new_bcode_begin_cost_policy must be 'zero' or 'blank'")
 
     # --------------------
     # Prepare movement
@@ -1107,15 +1133,15 @@ def build_yearly_inventory_report(
     mov = current_year_movement.copy()
     mov.columns = mov.columns.astype(str).str.replace("\ufeff", "", regex=False).str.strip()
 
-    if "BCODE" not in mov.columns:
-        raise KeyError("current_year_movement is missing required column: BCODE")
+    required_mov = {"BCODE", "IN", "OUT", "AV_COST", "DESCR"}
+    missing_mov = required_mov - set(mov.columns)
+    if missing_mov:
+        raise KeyError(f"current_year_movement is missing required columns: {sorted(missing_mov)}")
 
-    mov["BCODE"] = mov["BCODE"].astype(str).str.strip()
+    mov["BCODE"] = mov["BCODE"].astype("string").str.strip()
 
     mov_small = mov[["BCODE", "IN", "OUT", "AV_COST", "DESCR"]].copy()
-    mov_small = mov_small.rename(
-        columns={"AV_COST": "AV_COST_MOV", "DESCR": "DESCR_MOV"}
-    )
+    mov_small = mov_small.rename(columns={"AV_COST": "AV_COST_MOV", "DESCR": "DESCR_MOV"})
 
     for c in ["IN", "OUT", "AV_COST_MOV"]:
         mov_small[c] = pd.to_numeric(mov_small[c], errors="coerce")
@@ -1127,10 +1153,12 @@ def build_yearly_inventory_report(
         prev = prev_year_inventory.copy()
         prev.columns = prev.columns.astype(str).str.replace("\ufeff", "", regex=False).str.strip()
 
-        if "BCODE" not in prev.columns or "END" not in prev.columns:
-            raise KeyError("prev_year_inventory must contain BCODE and END")
+        required_prev = {"BCODE", "END", "AV_COST", "DESCR"}
+        missing_prev = required_prev - set(prev.columns)
+        if missing_prev:
+            raise KeyError(f"prev_year_inventory is missing required columns: {sorted(missing_prev)}")
 
-        prev["BCODE"] = prev["BCODE"].astype(str).str.strip()
+        prev["BCODE"] = prev["BCODE"].astype("string").str.strip()
 
         prev_small = prev[["BCODE", "END", "AV_COST", "DESCR"]].copy()
         prev_small = prev_small.rename(
@@ -1144,33 +1172,53 @@ def build_yearly_inventory_report(
         prev_small["BEGIN"] = pd.to_numeric(prev_small["BEGIN"], errors="coerce")
         prev_small["AV_COST_PREV"] = pd.to_numeric(prev_small["AV_COST_PREV"], errors="coerce")
 
+        # Outer merge: includes BCODEs appearing in either prev or movement
         result = prev_small.merge(mov_small, on="BCODE", how="outer")
 
+        # New BCODE = did not exist in prev (BEGIN was NaN before fill)
+        result["IS_NEW_BCODE"] = result["BEGIN"].isna()
+
     else:
-        # First year: BEGIN = 0
+        # First year: everything is "new" relative to prev
         result = mov_small.copy()
         result["BEGIN"] = 0
         result["AV_COST_PREV"] = pd.NA
         result["DESCR_PREV"] = pd.NA
+        result["IS_NEW_BCODE"] = True
 
     # --------------------
-    # Defaults
+    # Defaults (quantities)
     # --------------------
-    result["BEGIN"] = result["BEGIN"].fillna(0)
-    result["IN"] = result["IN"].fillna(0)
-    result["OUT"] = result["OUT"].fillna(0)
+    result["BEGIN"] = pd.to_numeric(result["BEGIN"], errors="coerce").fillna(0)
+    result["IN"] = pd.to_numeric(result["IN"], errors="coerce").fillna(0)
+    result["OUT"] = pd.to_numeric(result["OUT"], errors="coerce").fillna(0)
 
     # --------------------
     # DESCR: prev first, then movement
     # --------------------
     result["DESCR_PREV"] = result["DESCR_PREV"].astype("string")
     result["DESCR_MOV"] = result["DESCR_MOV"].astype("string")
-
     result["DESCR"] = result["DESCR_PREV"].combine_first(result["DESCR_MOV"])
 
     # --------------------
-    # AV_COST: movement first, fallback to prev
+    # BEGIN valuation (from prev year only)
     # --------------------
+    begin_cost_prev = pd.to_numeric(result["AV_COST_PREV"], errors="coerce")
+
+    if new_bcode_begin_cost_policy == "zero":
+        result["BEGIN_AV_COST"] = begin_cost_prev.fillna(0)
+    else:  # "blank"
+        # Keep NaN for new BCODE begin cost, but we will still compute BEGIN_AMOUNT as 0.
+        result["BEGIN_AV_COST"] = begin_cost_prev
+
+    # BEGIN_AMOUNT: opening stock value (always numeric for totals)
+    # If BEGIN=0, amount is 0 regardless of cost NaN; fill NaN cost to 0 for multiplication.
+    result["BEGIN_AMOUNT"] = result["BEGIN"] * pd.to_numeric(result["BEGIN_AV_COST"], errors="coerce").fillna(0)
+
+    # --------------------
+    # AV_COST for END valuation: movement first, fallback to prev
+    # --------------------
+    # (This is your original rule.)
     result["AV_COST"] = result["AV_COST_MOV"].combine_first(result["AV_COST_PREV"])
 
     # --------------------
@@ -1182,29 +1230,38 @@ def build_yearly_inventory_report(
     # --------------------
     # Fix negative END (BEGIN is truth)
     # --------------------
+    # Keep audit columns always present
+    result["IN_ORIG"] = result["IN"]
+    result["NEG_END_FIXED"] = False
+
     if fix_negative_end:
         neg_mask = result["END"] < 0
 
-        # audit trail
-        result["IN_ORIG"] = result["IN"]
-        result["NEG_END_FIXED"] = False
-
         # adjust IN so END becomes 0
-        result.loc[neg_mask, "IN"] = (
-            result.loc[neg_mask, "OUT"]
-            - result.loc[neg_mask, "BEGIN"]
-        )
+        result.loc[neg_mask, "IN"] = result.loc[neg_mask, "OUT"] - result.loc[neg_mask, "BEGIN"]
 
+        # set END/AMOUNT to 0
         result.loc[neg_mask, "END"] = 0
         result.loc[neg_mask, "AMOUNT"] = 0
+
         result.loc[neg_mask, "NEG_END_FIXED"] = True
 
     # --------------------
     # Final output
     # --------------------
-    result = result[
-        ["BCODE", "DESCR", "BEGIN", "IN", "OUT", "END", "AV_COST", "AMOUNT",
-         "IN_ORIG", "NEG_END_FIXED"]
-    ].copy()
+    out_cols = [
+        "BCODE", "DESCR",
+        "BEGIN", "BEGIN_AV_COST", "BEGIN_AMOUNT",
+        "IN", "OUT", "END", "AV_COST", "AMOUNT",
+        "IN_ORIG", "NEG_END_FIXED", "IS_NEW_BCODE",
+    ]
+
+    result = result[out_cols].copy()
+
+    # Optional: nicer dtypes
+    result["BCODE"] = result["BCODE"].astype("string")
+    result["DESCR"] = result["DESCR"].astype("string")
+    result["IS_NEW_BCODE"] = result["IS_NEW_BCODE"].fillna(True).astype(bool)
+    result["NEG_END_FIXED"] = result["NEG_END_FIXED"].fillna(False).astype(bool)
 
     return result
