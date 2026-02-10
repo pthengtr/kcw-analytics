@@ -700,24 +700,25 @@ def get_syp_received_transfer_lines(
     return syp_tf_rows
 
 
-def get_weighted_avg_purchase_unit_cost_all_time(
+import pandas as pd
+import numpy as np
+
+def build_purchase_avg_cost_diagnostics_all_time(
     pidet_df: pd.DataFrame,
     *,
     bcode_col: str = "BCODE",
     date_col: str = "BILLDATE",
     price_col: str = "PRICE",
     mtp_col: str = "MTP",
-) -> pd.Series:
+) -> pd.DataFrame:
     """
-    Return Series indexed by BCODE with WEIGHTED AVERAGE purchase UNIT COST,
-    using ALL PIDET history (no year/month limit).
+    Build BCODE-level diagnostic table for weighted avg purchase unit cost (all time).
 
-    Weighted avg unit cost per BCODE:
-        sum(PRICE) / sum(MTP)
-
-    Notes:
-    - Assumes PRICE is the line total for the purchase line and MTP is units.
-    - Filters out invalid dates, missing PRICE/MTP, and MTP <= 0.
+    Output columns include:
+    - AVG_UNIT_COST (weighted avg = sum(price)/sum(mtp) over valid rows)
+    - row counts per rejection reason
+    - totals (TOTAL_PRICE_VALID, TOTAL_MTP_VALID)
+    - flags explaining why AVG_UNIT_COST is missing
     """
 
     df = pidet_df.copy()
@@ -729,35 +730,90 @@ def get_weighted_avg_purchase_unit_cost_all_time(
         .str.strip()
     )
 
-    # drop invalid BCODE early
-    df = _drop_invalid_bcode(df, bcode_col)
+    # keep original BCODE value (before dropping invalid) for diagnostics
+    bcode_raw = df[bcode_col] if bcode_col in df.columns else pd.Series([pd.NA] * len(df))
 
-    # parse date (keeps "all time" but ensures valid rows)
-    df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
-    df = df.dropna(subset=[date_col])
+    # --- per-row validity checks (do NOT drop yet; we want diagnostics) ---
+    def _is_invalid_bcode(s: pd.Series) -> pd.Series:
+        # If you already have _drop_invalid_bcode(), you can align logic here.
+        # This is a safe default:
+        s2 = s.astype("string").str.strip()
+        return s2.isna() | (s2 == "") | (s2.str.lower().isin(["nan", "none", "null"]))
 
-    # numeric
-    df[price_col] = pd.to_numeric(df[price_col], errors="coerce")
-    df[mtp_col] = pd.to_numeric(df[mtp_col], errors="coerce")
+    invalid_bcode = _is_invalid_bcode(bcode_raw)
 
-    # keep valid amounts
-    df = df.dropna(subset=[price_col, mtp_col])
-    df = df[df[mtp_col] > 0]
+    parsed_date = pd.to_datetime(df.get(date_col, pd.Series([pd.NA]*len(df))), errors="coerce")
+    invalid_date = parsed_date.isna()
 
-    # weighted avg = sum(price) / sum(mtp)
-    sums = df.groupby(bcode_col).agg(
-        TOTAL_PRICE=(price_col, "sum"),
-        TOTAL_MTP=(mtp_col, "sum")
+    price_num = pd.to_numeric(df.get(price_col, pd.Series([pd.NA]*len(df))), errors="coerce")
+    invalid_price = price_num.isna()
+
+    mtp_num = pd.to_numeric(df.get(mtp_col, pd.Series([pd.NA]*len(df))), errors="coerce")
+    invalid_mtp = mtp_num.isna()
+    nonpos_mtp = (~invalid_mtp) & (mtp_num <= 0)
+
+    # valid row = passes ALL requirements used in avg-cost calc
+    is_valid_row = (
+        (~invalid_bcode)
+        & (~invalid_date)
+        & (~invalid_price)
+        & (~invalid_mtp)
+        & (~nonpos_mtp)
     )
 
-    avg_cost = (sums["TOTAL_PRICE"] / sums["TOTAL_MTP"]).replace([pd.NA, float("inf")], pd.NA)
+    # For grouping, we can only group rows that have a non-invalid BCODE
+    # (invalid BCODE rows are counted globally but can't be assigned to a specific BCODE reliably)
+    df_g = df.loc[~invalid_bcode, [bcode_col]].copy()
+    df_g["_INVALID_DATE"] = invalid_date[~invalid_bcode].to_numpy()
+    df_g["_INVALID_PRICE"] = invalid_price[~invalid_bcode].to_numpy()
+    df_g["_INVALID_MTP"] = invalid_mtp[~invalid_bcode].to_numpy()
+    df_g["_NONPOS_MTP"] = nonpos_mtp[~invalid_bcode].to_numpy()
+    df_g["_VALID_ROW"] = is_valid_row[~invalid_bcode].to_numpy()
+    df_g["_PRICE_NUM"] = price_num[~invalid_bcode].to_numpy()
+    df_g["_MTP_NUM"] = mtp_num[~invalid_bcode].to_numpy()
 
-    return avg_cost
+    # --- BCODE-level counts ---
+    g = df_g.groupby(bcode_col, dropna=False)
 
+    diag = g.agg(
+        ROWS_TOTAL=(bcode_col, "size"),
+        ROWS_VALID=("_VALID_ROW", "sum"),
+        ROWS_INVALID_DATE=("_INVALID_DATE", "sum"),
+        ROWS_INVALID_PRICE=("_INVALID_PRICE", "sum"),
+        ROWS_INVALID_MTP=("_INVALID_MTP", "sum"),
+        ROWS_NONPOS_MTP=("_NONPOS_MTP", "sum"),
+        TOTAL_PRICE_VALID=("_PRICE_NUM", lambda s: float(np.nansum(s[df_g.loc[s.index, "_VALID_ROW"]]))),
+        TOTAL_MTP_VALID=("_MTP_NUM", lambda s: float(np.nansum(s[df_g.loc[s.index, "_VALID_ROW"]]))),
+    )
 
-import pandas as pd
+    # Weighted average over valid rows
+    diag["AVG_UNIT_COST"] = diag["TOTAL_PRICE_VALID"] / diag["TOTAL_MTP_VALID"]
+    diag.loc[~np.isfinite(diag["AVG_UNIT_COST"]), "AVG_UNIT_COST"] = np.nan  # inf, -inf -> NaN
 
-import pandas as pd
+    # --- High-level flags ---
+    diag["FLAG_HAS_VALID_ROWS"] = diag["ROWS_VALID"] > 0
+    diag["FLAG_NO_VALID_ROWS"] = diag["ROWS_VALID"] == 0
+
+    # Reasons (only meaningful when no valid rows)
+    diag["FLAG_ALL_DATES_INVALID"] = diag["FLAG_NO_VALID_ROWS"] & (diag["ROWS_INVALID_DATE"] == diag["ROWS_TOTAL"])
+    diag["FLAG_ALL_PRICE_INVALID"] = diag["FLAG_NO_VALID_ROWS"] & (diag["ROWS_INVALID_PRICE"] == diag["ROWS_TOTAL"])
+    diag["FLAG_ALL_MTP_INVALID"] = diag["FLAG_NO_VALID_ROWS"] & (diag["ROWS_INVALID_MTP"] == diag["ROWS_TOTAL"])
+    diag["FLAG_ALL_QTY_NONPOSITIVE"] = diag["FLAG_NO_VALID_ROWS"] & ((diag["ROWS_NONPOS_MTP"] + diag["ROWS_INVALID_MTP"]) == diag["ROWS_TOTAL"])
+
+    # Division by zero case (valid rows exist but summed qty is 0 — rare but possible)
+    diag["FLAG_ZERO_TOTAL_QTY"] = diag["FLAG_HAS_VALID_ROWS"] & (diag["TOTAL_MTP_VALID"] == 0)
+
+    # Useful meta: how many rows had invalid BCODE (cannot assign to any BCODE)
+    diag.attrs["ROWS_INVALID_BCODE_GLOBAL"] = int(invalid_bcode.sum())
+
+    # Sort for readability (most problematic first)
+    diag = diag.sort_values(
+        by=["FLAG_NO_VALID_ROWS", "ROWS_TOTAL"],
+        ascending=[False, False],
+    )
+
+    return diag.reset_index()
+
 
 import pandas as pd
 
