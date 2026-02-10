@@ -756,116 +756,233 @@ def get_weighted_avg_purchase_unit_cost_all_time(
     return avg_cost
 
 
+import pandas as pd
+import numpy as np
+
+
 def build_purchase_avg_cost_diagnostics_all_time(
-    pidet_df: pd.DataFrame,
+    pidet_df,
     *,
     bcode_col: str = "BCODE",
     date_col: str = "BILLDATE",
     price_col: str = "PRICE",
-    mtp_col: str = "MTP",
+    qty_col: str = "MTP",
+    price_is_line_total: bool = True,   # True: PRICE = line total; False: PRICE = unit price
+    normalize_bcode: bool = True,
 ) -> pd.DataFrame:
     """
-    Build BCODE-level diagnostic table for weighted avg purchase unit cost (all time).
+    Build a BCODE-level diagnostic table for purchase weighted-average unit cost (all time).
 
-    Output columns include:
-    - AVG_UNIT_COST (weighted avg = sum(price)/sum(mtp) over valid rows)
-    - row counts per rejection reason
-    - totals (TOTAL_PRICE_VALID, TOTAL_MTP_VALID)
-    - flags explaining why AVG_UNIT_COST is missing
+    Valid row rules (same spirit as your avg-cost function):
+    - BCODE must be non-empty
+    - date must parse
+    - PRICE and QTY must be numeric
+    - QTY > 0
+
+    Weighted avg unit cost per BCODE:
+      if price_is_line_total:
+         AVG = sum(PRICE) / sum(QTY)
+      else:  # PRICE is unit price
+         AVG = sum(PRICE * QTY) / sum(QTY)
+
+    Output includes:
+    - ROWS_TOTAL, ROWS_VALID, rejection counts
+    - TOTAL_QTY_VALID, TOTAL_VALUE_VALID
+    - AVG_UNIT_COST
+    - flags to explain missing/zero cost
     """
+
+    # ---- accept "tuple mistake" defensively ----
+    if isinstance(pidet_df, tuple):
+        # common trailing comma issue or multi-return
+        for x in pidet_df:
+            if isinstance(x, pd.DataFrame):
+                pidet_df = x
+                break
+        else:
+            raise TypeError("pidet_df is a tuple but contains no pandas DataFrame")
+
+    if not isinstance(pidet_df, pd.DataFrame):
+        raise TypeError(f"pidet_df must be a pandas DataFrame, got: {type(pidet_df)}")
 
     df = pidet_df.copy()
 
-    # clean columns
+    # ---- clean columns ----
     df.columns = (
         df.columns.astype(str)
         .str.replace("\ufeff", "", regex=False)
         .str.strip()
     )
 
-    # keep original BCODE value (before dropping invalid) for diagnostics
-    bcode_raw = df[bcode_col] if bcode_col in df.columns else pd.Series([pd.NA] * len(df))
+    # ---- guard missing required cols ----
+    for c in [bcode_col, date_col, price_col, qty_col]:
+        if c not in df.columns:
+            raise KeyError(f"Missing required column: {c}")
 
-    # --- per-row validity checks (do NOT drop yet; we want diagnostics) ---
-    def _is_invalid_bcode(s: pd.Series) -> pd.Series:
-        # If you already have _drop_invalid_bcode(), you can align logic here.
-        # This is a safe default:
-        s2 = s.astype("string").str.strip()
-        return s2.isna() | (s2 == "") | (s2.str.lower().isin(["nan", "none", "null"]))
+    # ---- normalize BCODE (prevents false 'no history' due to spacing/case) ----
+    if normalize_bcode:
+        df[bcode_col] = df[bcode_col].astype("string").str.strip().str.upper()
+    else:
+        df[bcode_col] = df[bcode_col].astype("string").str.strip()
 
-    invalid_bcode = _is_invalid_bcode(bcode_raw)
+    # invalid BCODE (cannot group reliably)
+    invalid_bcode = df[bcode_col].isna() | (df[bcode_col] == "")
 
-    parsed_date = pd.to_datetime(df.get(date_col, pd.Series([pd.NA]*len(df))), errors="coerce")
+    # parse date
+    parsed_date = pd.to_datetime(df[date_col], errors="coerce")
     invalid_date = parsed_date.isna()
 
-    price_num = pd.to_numeric(df.get(price_col, pd.Series([pd.NA]*len(df))), errors="coerce")
+    # numeric parse
+    price_num = pd.to_numeric(df[price_col], errors="coerce")
+    qty_num = pd.to_numeric(df[qty_col], errors="coerce")
+
     invalid_price = price_num.isna()
+    invalid_qty = qty_num.isna()
+    nonpos_qty = (~invalid_qty) & (qty_num <= 0)
 
-    mtp_num = pd.to_numeric(df.get(mtp_col, pd.Series([pd.NA]*len(df))), errors="coerce")
-    invalid_mtp = mtp_num.isna()
-    nonpos_mtp = (~invalid_mtp) & (mtp_num <= 0)
+    # valid row
+    valid_row = (~invalid_bcode) & (~invalid_date) & (~invalid_price) & (~invalid_qty) & (~nonpos_qty)
 
-    # valid row = passes ALL requirements used in avg-cost calc
-    is_valid_row = (
-        (~invalid_bcode)
-        & (~invalid_date)
-        & (~invalid_price)
-        & (~invalid_mtp)
-        & (~nonpos_mtp)
-    )
+    # Work only with rows that have a valid BCODE for BCODE-level stats
+    df_g = pd.DataFrame({
+        bcode_col: df.loc[~invalid_bcode, bcode_col].astype("string"),
+        "_INVALID_DATE": invalid_date.loc[~invalid_bcode].to_numpy(),
+        "_INVALID_PRICE": invalid_price.loc[~invalid_bcode].to_numpy(),
+        "_INVALID_QTY": invalid_qty.loc[~invalid_bcode].to_numpy(),
+        "_NONPOS_QTY": nonpos_qty.loc[~invalid_bcode].to_numpy(),
+        "_VALID_ROW": valid_row.loc[~invalid_bcode].to_numpy(),
+        "_PRICE": price_num.loc[~invalid_bcode].to_numpy(),
+        "_QTY": qty_num.loc[~invalid_bcode].to_numpy(),
+    })
 
-    # For grouping, we can only group rows that have a non-invalid BCODE
-    # (invalid BCODE rows are counted globally but can't be assigned to a specific BCODE reliably)
-    df_g = df.loc[~invalid_bcode, [bcode_col]].copy()
-    df_g["_INVALID_DATE"] = invalid_date[~invalid_bcode].to_numpy()
-    df_g["_INVALID_PRICE"] = invalid_price[~invalid_bcode].to_numpy()
-    df_g["_INVALID_MTP"] = invalid_mtp[~invalid_bcode].to_numpy()
-    df_g["_NONPOS_MTP"] = nonpos_mtp[~invalid_bcode].to_numpy()
-    df_g["_VALID_ROW"] = is_valid_row[~invalid_bcode].to_numpy()
-    df_g["_PRICE_NUM"] = price_num[~invalid_bcode].to_numpy()
-    df_g["_MTP_NUM"] = mtp_num[~invalid_bcode].to_numpy()
-
-    # --- BCODE-level counts ---
+    # Counts on all (groupable) rows
     g = df_g.groupby(bcode_col, dropna=False)
-
-    diag = g.agg(
+    counts_all = g.agg(
         ROWS_TOTAL=(bcode_col, "size"),
-        ROWS_VALID=("_VALID_ROW", "sum"),
         ROWS_INVALID_DATE=("_INVALID_DATE", "sum"),
         ROWS_INVALID_PRICE=("_INVALID_PRICE", "sum"),
-        ROWS_INVALID_MTP=("_INVALID_MTP", "sum"),
-        ROWS_NONPOS_MTP=("_NONPOS_MTP", "sum"),
-        TOTAL_PRICE_VALID=("_PRICE_NUM", lambda s: float(np.nansum(s[df_g.loc[s.index, "_VALID_ROW"]]))),
-        TOTAL_MTP_VALID=("_MTP_NUM", lambda s: float(np.nansum(s[df_g.loc[s.index, "_VALID_ROW"]]))),
+        ROWS_INVALID_QTY=("_INVALID_QTY", "sum"),
+        ROWS_NONPOS_QTY=("_NONPOS_QTY", "sum"),
     )
 
-    # Weighted average over valid rows
-    diag["AVG_UNIT_COST"] = diag["TOTAL_PRICE_VALID"] / diag["TOTAL_MTP_VALID"]
-    diag.loc[~np.isfinite(diag["AVG_UNIT_COST"]), "AVG_UNIT_COST"] = np.nan  # inf, -inf -> NaN
+    # Sums on valid rows only
+    valid_only = df_g[df_g["_VALID_ROW"]].copy()
+    if price_is_line_total:
+        valid_only["_VALUE"] = valid_only["_PRICE"]
+    else:
+        valid_only["_VALUE"] = valid_only["_PRICE"] * valid_only["_QTY"]
 
-    # --- High-level flags ---
+    sums_valid = valid_only.groupby(bcode_col).agg(
+        ROWS_VALID=("_VALID_ROW", "size"),
+        TOTAL_QTY_VALID=("_QTY", "sum"),
+        TOTAL_VALUE_VALID=("_VALUE", "sum"),
+    )
+
+    diag = counts_all.join(sums_valid, how="left")
+    diag["ROWS_VALID"] = diag["ROWS_VALID"].fillna(0).astype(int)
+    diag["TOTAL_QTY_VALID"] = diag["TOTAL_QTY_VALID"].fillna(0.0)
+    diag["TOTAL_VALUE_VALID"] = diag["TOTAL_VALUE_VALID"].fillna(0.0)
+
+    # avg cost
+    diag["AVG_UNIT_COST"] = diag["TOTAL_VALUE_VALID"] / diag["TOTAL_QTY_VALID"]
+    diag.loc[~np.isfinite(diag["AVG_UNIT_COST"]), "AVG_UNIT_COST"] = np.nan
+
+    # ---- flags ----
     diag["FLAG_HAS_VALID_ROWS"] = diag["ROWS_VALID"] > 0
     diag["FLAG_NO_VALID_ROWS"] = diag["ROWS_VALID"] == 0
 
-    # Reasons (only meaningful when no valid rows)
     diag["FLAG_ALL_DATES_INVALID"] = diag["FLAG_NO_VALID_ROWS"] & (diag["ROWS_INVALID_DATE"] == diag["ROWS_TOTAL"])
     diag["FLAG_ALL_PRICE_INVALID"] = diag["FLAG_NO_VALID_ROWS"] & (diag["ROWS_INVALID_PRICE"] == diag["ROWS_TOTAL"])
-    diag["FLAG_ALL_MTP_INVALID"] = diag["FLAG_NO_VALID_ROWS"] & (diag["ROWS_INVALID_MTP"] == diag["ROWS_TOTAL"])
-    diag["FLAG_ALL_QTY_NONPOSITIVE"] = diag["FLAG_NO_VALID_ROWS"] & ((diag["ROWS_NONPOS_MTP"] + diag["ROWS_INVALID_MTP"]) == diag["ROWS_TOTAL"])
-
-    # Division by zero case (valid rows exist but summed qty is 0 — rare but possible)
-    diag["FLAG_ZERO_TOTAL_QTY"] = diag["FLAG_HAS_VALID_ROWS"] & (diag["TOTAL_MTP_VALID"] == 0)
-
-    # Useful meta: how many rows had invalid BCODE (cannot assign to any BCODE)
-    diag.attrs["ROWS_INVALID_BCODE_GLOBAL"] = int(invalid_bcode.sum())
-
-    # Sort for readability (most problematic first)
-    diag = diag.sort_values(
-        by=["FLAG_NO_VALID_ROWS", "ROWS_TOTAL"],
-        ascending=[False, False],
+    diag["FLAG_ALL_QTY_INVALID"] = diag["FLAG_NO_VALID_ROWS"] & (diag["ROWS_INVALID_QTY"] == diag["ROWS_TOTAL"])
+    diag["FLAG_ALL_QTY_NONPOSITIVE"] = diag["FLAG_NO_VALID_ROWS"] & (
+        (diag["ROWS_NONPOS_QTY"] + diag["ROWS_INVALID_QTY"]) == diag["ROWS_TOTAL"]
     )
 
-    return diag.reset_index()
+    # rare but important
+    diag["FLAG_ZERO_TOTAL_QTY"] = diag["FLAG_HAS_VALID_ROWS"] & (diag["TOTAL_QTY_VALID"] == 0)
+
+    # your situation: history exists, but computed avg cost is 0
+    diag["FLAG_AVG_COST_ZERO"] = diag["FLAG_HAS_VALID_ROWS"] & (diag["AVG_UNIT_COST"] == 0)
+
+    # global info: rows with invalid BCODE (cannot attribute to any BCODE)
+    diag.attrs["ROWS_INVALID_BCODE_GLOBAL"] = int(invalid_bcode.sum())
+
+    # optional helpful ordering
+    diag = diag.sort_values(
+        by=["FLAG_NO_VALID_ROWS", "FLAG_AVG_COST_ZERO", "ROWS_TOTAL"],
+        ascending=[False, False, False],
+    ).reset_index()
+
+    return diag
+
+
+def attach_purchase_cost_and_flags_to_sales(
+    sales_df: pd.DataFrame,
+    pidet_df: pd.DataFrame,
+    *,
+    sales_bcode_col: str = "BCODE",
+    pidet_bcode_col: str = "BCODE",
+    date_col: str = "BILLDATE",
+    price_col: str = "PRICE",
+    qty_col: str = "MTP",
+    price_is_line_total: bool = True,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Returns (sales_with_cost_and_flags, diag_table)
+
+    - Normalizes BCODE on BOTH sides to prevent false 'no purchase history'
+    - Adds AC_COST from diag AVG_UNIT_COST
+    - Adds diagnostic flags + robust FLAG_NO_PURCHASE_HISTORY based on diag ROWS_TOTAL missing
+    """
+
+    # build diag (normalizes pidet BCODE inside)
+    diag = build_purchase_avg_cost_diagnostics_all_time(
+        pidet_df,
+        bcode_col=pidet_bcode_col,
+        date_col=date_col,
+        price_col=price_col,
+        qty_col=qty_col,
+        price_is_line_total=price_is_line_total,
+        normalize_bcode=True,
+    )
+
+    out = sales_df.copy()
+    out[sales_bcode_col] = out[sales_bcode_col].astype("string").str.strip().str.upper()
+
+    # map cost
+    avg_map = diag.set_index(pidet_bcode_col)["AVG_UNIT_COST"]
+    out["AC_COST"] = out[sales_bcode_col].map(avg_map)
+
+    # merge flags + counts (so we can detect "no match" properly)
+    merge_cols = [
+        pidet_bcode_col,
+        "ROWS_TOTAL",
+        "ROWS_VALID",
+        "TOTAL_QTY_VALID",
+        "TOTAL_VALUE_VALID",
+        "AVG_UNIT_COST",
+        "FLAG_NO_VALID_ROWS",
+        "FLAG_ALL_DATES_INVALID",
+        "FLAG_ALL_PRICE_INVALID",
+        "FLAG_ALL_QTY_INVALID",
+        "FLAG_ALL_QTY_NONPOSITIVE",
+        "FLAG_ZERO_TOTAL_QTY",
+        "FLAG_AVG_COST_ZERO",
+    ]
+
+    out = out.merge(
+        diag[merge_cols],
+        left_on=sales_bcode_col,
+        right_on=pidet_bcode_col,
+        how="left",
+        suffixes=("", "_PIDET"),
+    )
+
+    # TRUE "no purchase history" = no matching BCODE in diag
+    out["FLAG_NO_PURCHASE_HISTORY"] = out["ROWS_TOTAL"].isna() & out[sales_bcode_col].notna() & (out[sales_bcode_col] != "")
+
+    return out, diag
+
 
 def build_inventory_summary_avg_cost(
     in_dfs: list[pd.DataFrame],
