@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 
 def _clean_columns(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -700,8 +701,60 @@ def get_syp_received_transfer_lines(
     return syp_tf_rows
 
 
-import pandas as pd
-import numpy as np
+def get_weighted_avg_purchase_unit_cost_all_time(
+    pidet_df: pd.DataFrame,
+    *,
+    bcode_col: str = "BCODE",
+    date_col: str = "BILLDATE",
+    price_col: str = "PRICE",
+    mtp_col: str = "MTP",
+) -> pd.Series:
+    """
+    Return Series indexed by BCODE with WEIGHTED AVERAGE purchase UNIT COST,
+    using ALL PIDET history (no year/month limit).
+
+    Weighted avg unit cost per BCODE:
+        sum(PRICE) / sum(MTP)
+
+    Notes:
+    - Assumes PRICE is the line total for the purchase line and MTP is units.
+    - Filters out invalid dates, missing PRICE/MTP, and MTP <= 0.
+    """
+
+    df = pidet_df.copy()
+
+    # clean columns
+    df.columns = (
+        df.columns.astype(str)
+        .str.replace("\ufeff", "", regex=False)
+        .str.strip()
+    )
+
+    # drop invalid BCODE early
+    df = _drop_invalid_bcode(df, bcode_col)
+
+    # parse date (keeps "all time" but ensures valid rows)
+    df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+    df = df.dropna(subset=[date_col])
+
+    # numeric
+    df[price_col] = pd.to_numeric(df[price_col], errors="coerce")
+    df[mtp_col] = pd.to_numeric(df[mtp_col], errors="coerce")
+
+    # keep valid amounts
+    df = df.dropna(subset=[price_col, mtp_col])
+    df = df[df[mtp_col] > 0]
+
+    # weighted avg = sum(price) / sum(mtp)
+    sums = df.groupby(bcode_col).agg(
+        TOTAL_PRICE=(price_col, "sum"),
+        TOTAL_MTP=(mtp_col, "sum")
+    )
+
+    avg_cost = (sums["TOTAL_PRICE"] / sums["TOTAL_MTP"]).replace([pd.NA, float("inf")], pd.NA)
+
+    return avg_cost
+
 
 def build_purchase_avg_cost_diagnostics_all_time(
     pidet_df: pd.DataFrame,
@@ -813,9 +866,6 @@ def build_purchase_avg_cost_diagnostics_all_time(
     )
 
     return diag.reset_index()
-
-
-import pandas as pd
 
 def build_inventory_summary_avg_cost(
     in_dfs: list[pd.DataFrame],
