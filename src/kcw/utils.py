@@ -369,7 +369,7 @@ def audit_bcode_vat_sales_last_purchase(
     # ------------------
     # PIDET
     # ------------------
-    pidet = data[f"raw_{source}_pidet_purchase_lines.csv"].copy()
+    pidet = data[f"raw_hq_pidet_purchase_lines.csv"].copy()
     pidet.columns = (
         pidet.columns.astype(str)
         .str.replace("\ufeff", "", regex=False)
