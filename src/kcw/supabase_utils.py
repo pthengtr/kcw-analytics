@@ -239,10 +239,6 @@ def qc_unknown(df, label):
     unk = (df["COST_STATUS"] == "UNKNOWN").sum()
     print(f"[{label}] UNKNOWN: {unk:,} / {total:,} ({(unk/total*100 if total else 0):.2f}%)")
 
-
-import numpy as np
-import pandas as pd
-
 _BCODE_RE = r"^\d{8}$"
 
 def _to_numeric_clean(series: pd.Series) -> pd.Series:
@@ -386,3 +382,191 @@ def enrich_sales_with_last_purchase_cost(
 
     merged = merged.sort_values("_POS", kind="mergesort").drop(columns=["_POS"])
     return merged
+
+def _clean_str(s: pd.Series) -> pd.Series:
+    s = s.astype("string")
+
+    # remove non-breaking space
+    s = s.str.replace("\u00A0", " ", regex=False)
+
+    # trim + normalize case
+    s = s.str.strip().str.upper()
+
+    # remove common fake-null strings
+    s = s.replace({
+        "": pd.NA,
+        "NAN": pd.NA,
+        "NONE": pd.NA,
+        "NULL": pd.NA
+    })
+
+    return s
+
+
+
+def _to_dt(s: pd.Series) -> pd.Series:
+    return pd.to_datetime(s, errors="coerce")
+
+# ------------------------
+# DimDate
+# ------------------------
+def build_dim_date_from_sales(sales_all: pd.DataFrame, *, date_col: str = "BILLDATE") -> pd.DataFrame:
+    d = _to_dt(sales_all[date_col]).dropna().dt.normalize()
+    if d.empty:
+        return pd.DataFrame(columns=["Date", "DateKey", "Year", "Month", "Day", "YearMonth", "Quarter", "WeekNum"])
+
+    date_range = pd.date_range(d.min(), d.max(), freq="D")
+    dim = pd.DataFrame({"Date": date_range})
+    dim["DateKey"] = dim["Date"].dt.strftime("%Y%m%d").astype(int)
+    dim["Year"] = dim["Date"].dt.year
+    dim["Month"] = dim["Date"].dt.month
+    dim["Day"] = dim["Date"].dt.day
+    dim["YearMonth"] = dim["Date"].dt.strftime("%Y-%m")
+    dim["Quarter"] = dim["Date"].dt.quarter
+    dim["WeekNum"] = dim["Date"].dt.isocalendar().week.astype(int)
+    return dim
+
+# ------------------------
+# DimBranch
+# ------------------------
+def build_dim_branch(sales_all: pd.DataFrame, *, branch_col: str = "BRANCH") -> pd.DataFrame:
+    dim = pd.DataFrame({"BRANCH": _clean_str(sales_all[branch_col])}).dropna()
+
+    dim = (
+        dim[dim["BRANCH"] != ""]
+        .drop_duplicates()
+        .sort_values("BRANCH")
+        .reset_index(drop=True)
+    )
+
+    # Keep your existing key
+    dim["BranchKey"] = dim["BRANCH"]
+
+    # 🔥 Map branch → UUID
+    BRANCH_UUID_MAP = {
+        "HQ": "c93efb5f-07c9-4229-b6b3-568ce1c0a9ab",
+        "SYP": "4975a5a1-90e6-443a-9921-c6c637f4631c",
+    }
+
+    dim["branch_uuid"] = dim["BRANCH"].map(BRANCH_UUID_MAP)
+
+    return dim
+
+
+# ------------------------
+# DimProduct (BCODE)
+# ------------------------
+def build_dim_product(
+    sales_all: pd.DataFrame,
+    *,
+    bcode_col: str = "BCODE",
+    detail_col: str = "DETAIL",
+    ui_col: str = "UI",
+    last_seen_date_col: str = "BILLDATE",
+) -> pd.DataFrame:
+    df = sales_all.copy()
+    df[bcode_col] = _clean_str(df[bcode_col])
+    df[detail_col] = _clean_str(df.get(detail_col, ""))
+    df[ui_col] = _clean_str(df.get(ui_col, ""))
+    df[last_seen_date_col] = _to_dt(df[last_seen_date_col])
+
+    df = df[df[bcode_col].notna() & (df[bcode_col] != "")]
+    df = df.sort_values([bcode_col, last_seen_date_col], kind="mergesort")
+    last = df.groupby(bcode_col, sort=False).tail(1)
+
+    dim = pd.DataFrame({
+        "BCODE": last[bcode_col],
+        "DETAIL": last.get(detail_col, pd.Series([pd.NA]*len(last))),
+        "UI": last.get(ui_col, pd.Series([pd.NA]*len(last))),
+        "LastSeenDate": last[last_seen_date_col].dt.normalize(),
+    }).reset_index(drop=True)
+
+    dim["ProductKey"] = dim["BCODE"]
+    # add CATEGORY_CODE (first 2 digits) for easy relationship too
+    dim["CATEGORY_CODE"] = dim["BCODE"].astype("string").str.slice(0, 2)
+    return dim
+
+# ------------------------
+# DimCategory (first 2 digits of BCODE)
+# ------------------------
+def build_dim_category_from_bcode(
+    sales_all: pd.DataFrame,
+    *,
+    bcode_col: str = "BCODE",
+) -> pd.DataFrame:
+    b = _clean_str(sales_all[bcode_col])
+    cat = b.dropna().str.slice(0, 2)
+    # keep only exactly 2 digits
+    cat = cat[cat.str.match(r"^\d{2}$", na=False)]
+
+    dim = pd.DataFrame({"CATEGORY_CODE": cat}).drop_duplicates().sort_values("CATEGORY_CODE").reset_index(drop=True)
+    dim["CategoryKey"] = dim["CATEGORY_CODE"]
+    return dim
+
+# ------------------------
+# DimAccount
+# ------------------------
+def build_dim_account(
+    sales_all: pd.DataFrame,
+    *,
+    customer_col: str = "ACCTNO",
+    supplier_col: str = "ACCT_NO",
+) -> pd.DataFrame:
+    # clean series (or empty)
+    c = _clean_str(sales_all[customer_col]) if customer_col in sales_all.columns else pd.Series([], dtype="string")
+    s = _clean_str(sales_all[supplier_col]) if supplier_col in sales_all.columns else pd.Series([], dtype="string")
+
+    # unique set of accounts from both columns
+    all_keys = pd.concat([c, s], ignore_index=True).dropna()
+    all_keys = all_keys[all_keys != ""].drop_duplicates().sort_values().reset_index(drop=True)
+
+    dim = pd.DataFrame({"AccountKey": all_keys})
+
+    # role flags
+    customer_set = set(c.dropna()[c.dropna() != ""].unique())
+    supplier_set = set(s.dropna()[s.dropna() != ""].unique())
+
+    dim["IsCustomer"] = dim["AccountKey"].isin(customer_set)
+    dim["IsSupplier"] = dim["AccountKey"].isin(supplier_set)
+
+    # optional: a readable label
+    dim["AccountRole"] = np.where(dim["IsCustomer"] & dim["IsSupplier"], "BOTH",
+                          np.where(dim["IsCustomer"], "CUSTOMER",
+                          np.where(dim["IsSupplier"], "SUPPLIER", "UNKNOWN")))
+
+    return dim
+
+
+# ------------------------
+# DimSupplier (ACCT_NO)
+# ------------------------
+def build_dim_supplier(sales_all: pd.DataFrame, *, supplier_col="ACCT_NO") -> pd.DataFrame:
+    s = _clean_str(sales_all[supplier_col]) if supplier_col in sales_all.columns else pd.Series([pd.NA]*len(sales_all), dtype="string")
+    dim = pd.DataFrame({"SupplierKey": s}).dropna()
+    dim = dim[dim["SupplierKey"] != ""].drop_duplicates(subset=["SupplierKey"]).sort_values("SupplierKey").reset_index(drop=True)
+    dim["SUPPLIER_ACCT_NO"] = dim["SupplierKey"]
+    return dim
+
+# -----------------------------
+# DIM BILLTYPE (from BILLNO)
+# -----------------------------
+KNOWN_TYPES = ["TFV", "TAD", "TAR", "TR", "TD", "TF", "CN", "DN"]
+
+def build_dim_billtype(sales_all):
+    dim = pd.DataFrame({"BILLTYPE_STD": _clean_str(sales_all["BILLTYPE_STD"]).str.upper()})
+    dim = dim.drop_duplicates().sort_values("BILLTYPE_STD").reset_index(drop=True)
+    dim["BillTypeKey"] = dim["BILLTYPE_STD"]
+    return dim
+
+# ------------------------
+# Wrapper
+# ------------------------
+def build_all_dims(sales_all):
+    return {
+        "dim_date": build_dim_date_from_sales(sales_all),
+        "dim_product": build_dim_product(sales_all),
+        "dim_category": build_dim_category_from_bcode(sales_all),
+        "dim_account": build_dim_account(sales_all),
+        "dim_branch": build_dim_branch(sales_all),
+        "dim_billtype": build_dim_billtype(sales_all),
+    }
