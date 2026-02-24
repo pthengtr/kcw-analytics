@@ -331,6 +331,7 @@ def enrich_sales_with_last_purchase_cost(
     qty_col: str = "QTY",
     mtp_col: str = "MTP",
     amount_col: str = "AMOUNT",
+    taxic_col: str = "TAXIC",  # ✅ NEW
     out_cost_col: str = "LAST_PURCHASE_COST",
     out_pdate_col: str = "LAST_PURCHASE_DATE",
     out_status_col: str = "COST_STATUS",
@@ -345,13 +346,25 @@ def enrich_sales_with_last_purchase_cost(
     s[sale_date_col] = pd.to_datetime(s[sale_date_col], errors="coerce")
     p[purch_date_col] = pd.to_datetime(p[purch_date_col], errors="coerce")
 
-    denom = p[qty_col].astype(float) * p[mtp_col].astype(float)
-    p["_UNIT_COST"] = np.where(denom != 0, p[amount_col].astype(float) / denom, np.nan)
+    # --- numeric safety ---
+    p_qty = pd.to_numeric(p[qty_col], errors="coerce")
+    p_mtp = pd.to_numeric(p[mtp_col], errors="coerce")
+    p_amt = pd.to_numeric(p[amount_col], errors="coerce")
+
+    # ✅ VAT handling for purchase amount when TAXIC == 'Y'
+    if taxic_col in p.columns:
+        taxic = p[taxic_col].astype("string").str.strip().str.upper()
+        p_amt_net = np.where(taxic.eq("Y"), p_amt * (100.0 / 107.0), p_amt)
+    else:
+        p_amt_net = p_amt
+
+    denom = p_qty * p_mtp
+    p["_UNIT_COST"] = np.where(denom != 0, p_amt_net / denom, np.nan)
 
     # Keep only valid purchases
     p = p[p[purch_date_col].notna() & p["_UNIT_COST"].notna()].copy()
 
-    # ✅ Create a separate right-side date column so we don't overwrite sale BILLDATE
+    # Create separate right-side date column
     p["_PURCH_DATE"] = p[purch_date_col]
 
     s["_POS"] = np.arange(len(s))
