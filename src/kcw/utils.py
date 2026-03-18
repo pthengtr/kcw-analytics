@@ -1,5 +1,45 @@
 import pandas as pd
 import numpy as np
+\
+def remove_vat_inclusive(
+    df,
+    amount_col="AMOUNT",
+    tax_flag_col="TAXIC",
+    tax_rate=0.07,
+    inplace=True,
+):
+    """
+    Remove VAT from VAT-inclusive amount.
+
+    If tax_flag_col == 'Y' → amount / (1 + tax_rate)
+    else → keep original amount
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+    amount_col : str
+    tax_flag_col : str
+    tax_rate : float
+    inplace : bool
+        True  → overwrite amount_col
+        False → return new Series
+
+    Returns
+    -------
+    DataFrame or Series
+    """
+
+    result = np.where(
+        df[tax_flag_col].astype(str).str.upper() == "Y",
+        df[amount_col] / (1 + tax_rate),
+        df[amount_col],
+    )
+
+    if inplace:
+        df[amount_col] = result
+        return df
+    else:
+        return result
 
 def _clean_columns(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -272,6 +312,8 @@ def get_nonvat_sales_lines_last_purchase_vat(
 
     sales = _clean_cols(data[sales_key])
     pidet = _clean_cols(data[purchase_key])
+
+
 
     # remove invalid BCODE early
     sales = _drop_invalid_bcode(sales, bcode_col)
@@ -722,6 +764,8 @@ def get_weighted_avg_purchase_unit_cost_all_time(
     """
 
     df = pidet_df.copy()
+
+    df["PRICE"] = np.where( df["TAXIC"].astype(str).str.upper() == "Y", df["PRICE"] / 1.07, df["PRICE"] )
 
     # clean columns
     df.columns = (
