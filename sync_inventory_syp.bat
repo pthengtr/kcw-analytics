@@ -21,7 +21,6 @@ echo Continue even if error
 
 echo.
 echo ✅ ALL DONE.
-pause
 exit /b 0
 
 

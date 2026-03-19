@@ -16,12 +16,11 @@ echo Notebooks: %NBDIR%
 echo Logs folder: %LOGDIR%
 echo ==========================================
 
-call :run_nb "90_csv_to_supabase.ipynb"
+call :run_nb "50_parts9_to_supabase.ipynb"
 echo Continue even if error
 
 echo.
 echo ✅ ALL DONE.
-pause
 exit /b 0
 
 
