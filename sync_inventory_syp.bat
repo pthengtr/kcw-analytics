@@ -1,9 +1,9 @@
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
 
-set PY=C:\ProgramData\anaconda3\python.exe
-set NBDIR=C:\Users\Windows 11\Notebook\kcw-analytics\notebooks
-set LOGDIR=C:\Users\Windows 11\Notebook\logs
+set PY=C:\Users\Admin\anaconda3\python.exe
+set NBDIR=C:\Users\Admin\Notebook\kcw-analytics\notebooks
+set LOGDIR=C:\Users\Admin\Notebook\logs
 
 if not exist "%LOGDIR%" (
     mkdir "%LOGDIR%"
@@ -50,5 +50,4 @@ exit /b 0
 :fail
 echo.
 echo ❌ STOPPED because one notebook failed.
-pause
 exit /b 1
