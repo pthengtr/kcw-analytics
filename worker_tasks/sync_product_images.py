@@ -44,31 +44,15 @@ def now_iso() -> str:
 def expected_supabase_filenames(bcode: str) -> list[str]:
     return [
         f"{bcode}.jpg",
-        f"{bcode}_1.jpg",
         f"{bcode}_2.jpg",
         f"{bcode}_3.jpg",
         f"{bcode}_4.jpg",
+        f"{bcode}_5.jpg",
     ]
 
 
-def legacy_filename_for_slot(bcode: str, slot_no: int) -> str:
-    if slot_no == 1:
-        return f"{bcode}.jpg"
-    return f"{bcode}_{slot_no}.jpg"
-
-
-def slot_no_from_supabase_filename(bcode: str, filename: str) -> int:
-    if filename == f"{bcode}.jpg":
-        return 1
-
-    stem = filename.removesuffix(".jpg")
-    suffix = stem.replace(f"{bcode}_", "")
-    return int(suffix) + 1
-
-
 def local_filename_from_remote(bcode: str, filename: str) -> str:
-    slot_no = slot_no_from_supabase_filename(bcode, filename)
-    return legacy_filename_for_slot(bcode, slot_no)
+    return filename
 
 
 def remote_folder_for_bcode(bcode: str) -> str:
@@ -86,7 +70,6 @@ def item_timestamp(item: dict) -> str:
         or item.get("last_modified")
         or ""
     )
-
 
 def item_size(item: dict) -> int | None:
     metadata = item.get("metadata") or {}
