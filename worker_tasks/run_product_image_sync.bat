@@ -1,16 +1,12 @@
 @echo off
-setlocal EnableExtensions EnableDelayedExpansion
+setlocal EnableExtensions DisableDelayedExpansion
 
 cd /d "%~dp0.."
 
-if exist ".env" (
-    for /f "usebackq tokens=1,* delims==" %%A in (".env") do (
-        set "key=%%A"
-        set "value=%%B"
-        if not "!key!"=="" if not "!key:~0,1!"=="#" (
-            set "!key!=!value!"
-        )
-    )
+REM Only read KCW_ANALYTICS_PYTHON from .env.
+REM Do not load secrets/DB URLs in batch because special characters can break.
+for /f "usebackq tokens=1,* delims==" %%A in (".env") do (
+    if /I "%%A"=="KCW_ANALYTICS_PYTHON" set "KCW_ANALYTICS_PYTHON=%%B"
 )
 
 if "%KCW_ANALYTICS_PYTHON%"=="" (
@@ -22,10 +18,10 @@ echo ==========================================
 echo Running product image sync
 echo Python: %KCW_ANALYTICS_PYTHON%
 echo Repo: %cd%
-echo Legacy dir: %LEGACY_PRODUCT_IMAGE_DIR%
 echo ==========================================
 
 "%KCW_ANALYTICS_PYTHON%" worker_tasks\sync_product_images.py
+
 if %ERRORLEVEL% NEQ 0 (
     echo FAILED: product image sync
     exit /b %ERRORLEVEL%

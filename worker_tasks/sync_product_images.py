@@ -15,7 +15,7 @@ from supabase import create_client
 # ==========================================================
 
 env_path = find_dotenv()
-load_dotenv(env_path)
+load_dotenv(env_path, override=True)
 
 
 def env(name: str, default: str | None = None, required: bool = False) -> str:
