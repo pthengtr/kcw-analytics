@@ -241,8 +241,10 @@ def get_vat_sales_lines_last_purchase_nonvat(
     pidet[bcode_col] = _clean_bcode(pidet[bcode_col])
 
     # --- Parse dates ---
-    sales[date_col] = pd.to_datetime(sales[date_col], errors="coerce")
-    pidet[date_col] = pd.to_datetime(pidet[date_col], errors="coerce")
+    # KCW exports are often dd/mm/yyyy; forcing dayfirst avoids mis-ordering that can
+    # incorrectly select a "future" purchase as-of the sale date.
+    sales[date_col] = pd.to_datetime(sales[date_col], errors="coerce", dayfirst=True)
+    pidet[date_col] = pd.to_datetime(pidet[date_col], errors="coerce", dayfirst=True)
 
     # --- Drop missing keys ---
     sales = sales.dropna(subset=[date_col, bcode_col]).copy()
@@ -323,9 +325,9 @@ def get_nonvat_sales_lines_last_purchase_vat(
     sales[bcode_col] = _clean_bcode(sales[bcode_col])
     pidet[bcode_col] = _clean_bcode(pidet[bcode_col])
 
-    # parse dates
-    sales[date_col] = pd.to_datetime(sales[date_col], errors="coerce")
-    pidet[date_col] = pd.to_datetime(pidet[date_col], errors="coerce")
+    # parse dates (KCW exports are often dd/mm/yyyy)
+    sales[date_col] = pd.to_datetime(sales[date_col], errors="coerce", dayfirst=True)
+    pidet[date_col] = pd.to_datetime(pidet[date_col], errors="coerce", dayfirst=True)
 
     # drop missing keys
     sales = sales.dropna(subset=[date_col, bcode_col]).copy()
