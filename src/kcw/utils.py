@@ -93,7 +93,7 @@ def get_nonvat_sales_lines(
 
     df = _drop_invalid_bcode(df, "BCODE")
 
-    df["BILLDATE"] = pd.to_datetime(df["BILLDATE"], errors="coerce")
+    df["BILLDATE"] = _parse_billdate(df["BILLDATE"])
     df = df.dropna(subset=["BILLDATE"]).copy()
 
     sales_isvat = df["ISVAT"].astype(str).str.strip().str.upper()
@@ -133,7 +133,7 @@ def get_vat_sales_lines(
     df = _drop_invalid_bcode(df, "BCODE")
 
     # parse date
-    df["BILLDATE"] = pd.to_datetime(df["BILLDATE"], errors="coerce")
+    df["BILLDATE"] = _parse_billdate(df["BILLDATE"])
 
     # base filters
     mask_vat = df["ISVAT"].astype(str).str.strip().str.upper() == "Y"
@@ -172,7 +172,7 @@ def get_vat_purchase_lines(
     df = _drop_invalid_bcode(df, "BCODE")
 
     # parse date
-    df["BILLDATE"] = pd.to_datetime(df["BILLDATE"], errors="coerce")
+    df["BILLDATE"] = _parse_billdate(df["BILLDATE"])
 
     # base filters
     mask_vat = df["ISVAT"].astype(str).str.strip().str.upper() == "Y"
@@ -204,6 +204,30 @@ def _clean_bcode(series: pd.Series) -> pd.Series:
         .str.strip()
         .str.replace(r"\.0$", "", regex=True)
     )
+
+
+def _parse_billdate(series: pd.Series) -> pd.Series:
+    """
+    Parse KCW BILLDATE values.
+
+    Raw exports may be ISO (yyyy-mm-dd) or dd/mm/yyyy. Using dayfirst=True on an
+    entire ISO column mis-parses any day > 12 as NaT (e.g. 2026-05-31), which drops
+    month-end sales from merge_asof reports.
+    """
+    s = (
+        series.astype(str)
+        .str.replace("\ufeff", "", regex=False)
+        .str.strip()
+    )
+    out = pd.Series(pd.NaT, index=series.index, dtype="datetime64[ns]")
+    iso = s.str.match(r"^\d{4}-\d{2}-\d{2}$", na=False)
+    if iso.any():
+        out.loc[iso] = pd.to_datetime(s.loc[iso], format="%Y-%m-%d", errors="coerce")
+    rest = ~iso & s.ne("") & ~s.str.upper().isin(["NAN", "NA", "NONE", "NULL", "<NA>"])
+    if rest.any():
+        out.loc[rest] = pd.to_datetime(s.loc[rest], errors="coerce", dayfirst=True)
+    return out
+
 
 def get_vat_sales_lines_last_purchase_nonvat(
     data: dict,
@@ -241,10 +265,8 @@ def get_vat_sales_lines_last_purchase_nonvat(
     pidet[bcode_col] = _clean_bcode(pidet[bcode_col])
 
     # --- Parse dates ---
-    # KCW exports are often dd/mm/yyyy; forcing dayfirst avoids mis-ordering that can
-    # incorrectly select a "future" purchase as-of the sale date.
-    sales[date_col] = pd.to_datetime(sales[date_col], errors="coerce", dayfirst=True)
-    pidet[date_col] = pd.to_datetime(pidet[date_col], errors="coerce", dayfirst=True)
+    sales[date_col] = _parse_billdate(sales[date_col])
+    pidet[date_col] = _parse_billdate(pidet[date_col])
 
     # --- Drop missing keys ---
     sales = sales.dropna(subset=[date_col, bcode_col]).copy()
@@ -325,9 +347,8 @@ def get_nonvat_sales_lines_last_purchase_vat(
     sales[bcode_col] = _clean_bcode(sales[bcode_col])
     pidet[bcode_col] = _clean_bcode(pidet[bcode_col])
 
-    # parse dates (KCW exports are often dd/mm/yyyy)
-    sales[date_col] = pd.to_datetime(sales[date_col], errors="coerce", dayfirst=True)
-    pidet[date_col] = pd.to_datetime(pidet[date_col], errors="coerce", dayfirst=True)
+    sales[date_col] = _parse_billdate(sales[date_col])
+    pidet[date_col] = _parse_billdate(pidet[date_col])
 
     # drop missing keys
     sales = sales.dropna(subset=[date_col, bcode_col]).copy()
