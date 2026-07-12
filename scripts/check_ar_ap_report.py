@@ -129,6 +129,17 @@ def test_ar_scenarios():
             make_row(BILLNO="TD6901-006", CANCELED="Y"),
             make_row(BILLNO="TD6901-007", VAT=0),
             make_row(BILLNO="TD6901-008", ACCTNAME="Shop on Shopee marketplace"),
+            make_row(BILLNO="TD6901-001", PAID="N", VOUCDATE2=None),  # unpaid -> include
+            make_row(BILLNO="TD6901-002", PAID="Y", VOUCDATE2="2026-02-20"),  # paid before cutoff -> exclude
+            make_row(BILLNO="TD6901-003", PAID="Y", VOUCDATE2="2026-03-05"),  # paid after cutoff -> include
+            make_row(BILLNO="TD6901-004", PAID="Y", VOUCDATE2=None),  # paid flag but no date -> include
+            make_row(BILLNO="TD6901-005", DUEAMT=0),  # zero due -> exclude
+            make_row(BILLNO="CN6901-001", DUEAMT=-500),  # credit note -> include
+            make_row(BILLNO="IV6901-001"),  # non AR bill type -> exclude
+            make_row(BILLNO="TD6903-001", BILLDATE="2026-03-05"),  # after cutoff -> exclude
+            make_row(BILLNO="TD6901-006", CANCELED="Y"),  # canceled -> exclude
+            make_row(BILLNO="TD6901-007", VAT=0),  # non-vat -> exclude
+            make_row(BILLNO="TD6901-008", ACCTNAME="Shop on Shopee marketplace"),  # normalize
         ]
     )
 
@@ -167,6 +178,8 @@ def test_ap_scenarios():
 
 
 def test_billdate_parsing_gap():
+    """Notebook uses naive to_datetime; utils _parse_billdate handles ISO safely."""
+    cutoff = pd.Timestamp("2026-03-01")
     iso_date = "2026-02-28"
     slash_date = "28/02/2026"
 
@@ -177,6 +190,7 @@ def test_billdate_parsing_gap():
     utils_parsed = _parse_billdate(df["BILLDATE"]).iloc[0]
 
     assert pd.notna(notebook_parsed)
+    assert pd.notna(notebook_parsed), "ISO date should parse in notebook logic"
     assert notebook_parsed == utils_parsed
 
     df2 = pd.DataFrame([make_row(BILLDATE=slash_date)])
@@ -192,4 +206,24 @@ if __name__ == "__main__":
     test_ar_scenarios()
     test_ap_scenarios()
     test_billdate_parsing_gap()
+def test_net_zero_summary_noise():
+    cutoff = pd.Timestamp("2026-03-01")
+    df = pd.DataFrame(
+        [
+            make_row(BILLNO="TD6901-010", DUEAMT=1000),
+            make_row(BILLNO="CN6901-010", DUEAMT=-1000),
+        ]
+    )
+    out = filter_ar(df, cutoff)
+    summary = out.groupby("ACCTNAME").agg(bills=("BILLNO", "nunique"), total=("DUEAMT", "sum")).reset_index()
+    assert summary.iloc[0]["total"] == 0
+    assert summary.iloc[0]["bills"] == 2
+    print("Net-zero pair kept in detail/summary (known behavior)")
+
+
+if __name__ == "__main__":
+    test_ar_scenarios()
+    test_ap_scenarios()
+    test_billdate_parsing_gap()
+    test_net_zero_summary_noise()
     print("\nAll AR/AP checks passed.")
