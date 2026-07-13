@@ -63,6 +63,8 @@ def filter_ap(df_pimas: pd.DataFrame, cutoff: pd.Timestamp) -> pd.DataFrame:
     mask_null = df["VOUCDATE2"].isna()
     mask_cancel = df["CANCELED"].astype(str).str.strip().str.upper() == "N"
     mask_vat = pd.to_numeric(df["VAT"], errors="coerce").fillna(0) > 0
+    # Exclude internal credit-note style AP bills
+    mask_exclude_billno = ~df["BILLNO"].astype(str).str.upper().str.startswith(("7KCCN", "7KWCN"), na=False)
 
     df["ACCTNAME"] = df["ACCTNAME"].apply(normalize_acctname)
     return df[
@@ -71,6 +73,7 @@ def filter_ap(df_pimas: pd.DataFrame, cutoff: pd.Timestamp) -> pd.DataFrame:
         & (mask_null | mask_paidafter)
         & mask_cancel
         & mask_vat
+        & mask_exclude_billno
     ].sort_values(by=["ACCTNAME", "BILLDATE"])
 
 
@@ -167,6 +170,9 @@ def test_ap_scenarios():
             make_row(BILLNO="IV6901-004", PAID="Y", VOUCDATE2=None),
             make_row(BILLNO="IV6901-005", DUEAMT=0),
             make_row(BILLNO="IV6903-001", BILLDATE="2026-03-02"),
+            make_row(BILLNO="7KCCN6901-001", PAID="N", VOUCDATE2=None),
+            make_row(BILLNO="7KWCN6901-001", PAID="N", VOUCDATE2=None),
+            make_row(BILLNO="7kccn6901-002", PAID="N", VOUCDATE2=None),  # case-insensitive
         ]
     )
 
@@ -175,6 +181,22 @@ def test_ap_scenarios():
     expected = {"IV6901-001", "IV6901-003", "IV6901-004"}
     assert billnos == expected, f"AP mismatch: got {billnos}, expected {expected}"
     print("AP scenario tests passed")
+
+
+def test_ap_excludes_7kccn_7kwcn_prefixes():
+    cutoff = pd.Timestamp("2026-03-01")
+    df = pd.DataFrame(
+        [
+            make_row(BILLNO="IV6901-100"),
+            make_row(BILLNO="7KCCN6902-010"),
+            make_row(BILLNO="7KWCN6902-020"),
+            make_row(BILLNO="BV6901-001"),
+        ]
+    )
+    out = filter_ap(df, cutoff)
+    billnos = set(out["BILLNO"])
+    assert billnos == {"IV6901-100", "BV6901-001"}, billnos
+    print("AP 7KCCN/7KWCN exclusion passed")
 
 
 def test_billdate_parsing_gap():
@@ -201,11 +223,6 @@ def test_billdate_parsing_gap():
     print("BILLDATE parsing comparison passed")
 
 
-if __name__ == "__main__":
-    test_cutoff_excludes_first_of_month_at_midnight()
-    test_ar_scenarios()
-    test_ap_scenarios()
-    test_billdate_parsing_gap()
 def test_net_zero_summary_noise():
     cutoff = pd.Timestamp("2026-03-01")
     df = pd.DataFrame(
@@ -222,8 +239,10 @@ def test_net_zero_summary_noise():
 
 
 if __name__ == "__main__":
+    test_cutoff_excludes_first_of_month_at_midnight()
     test_ar_scenarios()
     test_ap_scenarios()
+    test_ap_excludes_7kccn_7kwcn_prefixes()
     test_billdate_parsing_gap()
     test_net_zero_summary_noise()
     print("\nAll AR/AP checks passed.")
