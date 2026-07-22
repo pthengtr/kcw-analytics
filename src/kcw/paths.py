@@ -12,17 +12,25 @@ except ImportError:  # pragma: no cover
     yaml = None
 
 
+def _expand(path: str | Path) -> Path:
+    """Expand user/~ only. Do NOT Path.resolve() Drive paths — on Windows,
+    resolve() can rewrite G:\\Shared drives\\... into DriveFS cache under
+    AppData, and large CSV overwrites then fail to sync (sidet/icmas symptom).
+    """
+    return Path(path).expanduser()
+
+
 def repo_root() -> Path:
     env = os.getenv("KCW_ANALYTICS_ROOT")
     if env:
-        return Path(env).expanduser().resolve()
+        return _expand(env)
     # src/kcw/paths.py -> repo root
     return Path(__file__).resolve().parents[2]
 
 
 def _load_paths_yaml() -> dict[str, Any]:
     candidates = [
-        Path(os.getenv("KCW_PATHS_YAML", "")),
+        _expand(os.getenv("KCW_PATHS_YAML", "")),
         repo_root() / "paths.yaml",
         Path.home() / ".kcw" / "paths.yaml",
     ]
@@ -58,14 +66,11 @@ def drive_root() -> Path:
     """
     env = os.getenv("KCW_DRIVE_ROOT")
     if env:
-        return Path(env).expanduser().resolve()
+        return _expand(env)
 
     cfg = _load_paths_yaml()
-    if cfg.get("analytics_root"):
-        # parent of kcw_analytics/... is not always drive_root; expose via analytics_root()
-        pass
     if cfg.get("drive_root"):
-        return Path(cfg["drive_root"]).expanduser().resolve()
+        return _expand(cfg["drive_root"])
 
     # Common local fallbacks (Windows Drive File Stream / Colab)
     for candidate in (
@@ -73,7 +78,7 @@ def drive_root() -> Path:
         Path("/content/drive/Shareddrives"),
     ):
         if candidate.exists():
-            return candidate.resolve()
+            return candidate
 
     raise FileNotFoundError(
         "Cannot resolve Drive root. Set KCW_DRIVE_ROOT or create paths.yaml "
@@ -84,11 +89,11 @@ def drive_root() -> Path:
 def analytics_root() -> Path:
     env = os.getenv("KCW_ANALYTICS_DATA_ROOT")
     if env:
-        return Path(env).expanduser().resolve()
+        return _expand(env)
 
     cfg = _load_paths_yaml()
     if cfg.get("analytics_root"):
-        return Path(cfg["analytics_root"]).expanduser().resolve()
+        return _expand(cfg["analytics_root"])
 
     return drive_root() / "KCW-Data" / "kcw_analytics"
 
@@ -113,7 +118,7 @@ def tar_output_dir(kind: str = "TAR") -> Path:
 def log_dir() -> Path:
     env = os.getenv("KCW_ANALYTICS_LOG_DIR")
     if env:
-        return Path(env).expanduser().resolve()
+        return _expand(env)
     return repo_root() / "logs"
 
 

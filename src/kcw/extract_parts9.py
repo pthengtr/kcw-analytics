@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 import urllib.parse
 from pathlib import Path
 from typing import Optional
@@ -11,7 +12,8 @@ import pandas as pd
 
 from src.kcw import paths
 
-# Rolling windows + filenames match notebooks/51_parts9_to_drive.ipynb
+# Rolling windows + filenames match notebooks/51_parts9_to_drive.ipynb (HQ).
+# SYP original notebook used 5y for all bill tables — see SITE_YEARS.
 TABLE_SPECS = {
     "SIDET": {"years": 5, "suffix": "sidet_sales_lines"},
     "PIDET": {"years": 8, "suffix": "pidet_purchase_lines"},
@@ -22,6 +24,16 @@ TABLE_SPECS = {
     "ICMAS": {"years": None, "suffix": "icmas_products"},
     "PVMAS": {"years": None, "suffix": "pvmas_notes_vouchers"},
     "RVMAS": {"years": None, "suffix": "rvmas_notes_vouchers"},
+}
+
+# Match attached SYP PART9S_to_drive_raw notebook (all bill tables 5y).
+SITE_YEARS = {
+    "syp": {
+        "SIDET": 5,
+        "PIDET": 5,
+        "SIMAS": 5,
+        "PIMAS": 5,
+    },
 }
 
 # Minimal SYP set used by the attached local notebook (extend via FULL_EXTRACT=1).
@@ -71,6 +83,7 @@ def mssql_engine(site: str = "hq"):
             "TrustServerCertificate=yes;"
         )
     else:
+        # Same shape as the original SYP notebook trusted URL.
         odbc_str = (
             f"DRIVER={{{driver}}};"
             f"SERVER={server};"
@@ -95,6 +108,71 @@ def read_full_table(engine, table: str) -> pd.DataFrame:
     return pd.read_sql(f"SELECT * FROM dbo.{table};", engine)
 
 
+def _years_for(site: str, table: str) -> Optional[int]:
+    site_map = SITE_YEARS.get(site.lower(), {})
+    if table in site_map:
+        return site_map[table]
+    return TABLE_SPECS[table]["years"]
+
+
+def write_csv_atomic(df: pd.DataFrame, path: Path) -> None:
+    """
+    Write via temp file + os.replace so Google Drive File Stream picks up
+    large overwrites (direct to_csv on an existing cloud-only file often
+    leaves the cloud object stale — seen on sidet/icmas).
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        df.to_csv(tmp, index=False, encoding="utf-8-sig")
+        # Flush to disk before replace (helps DriveFS).
+        with open(tmp, "rb") as f:
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+
+def verify_csv_write(path: Path, expected_rows: int, *, min_bytes: int = 64) -> None:
+    """Confirm the final path exists, grew, and still has the expected row count."""
+    path = Path(path)
+    if not path.is_file():
+        raise FileNotFoundError(f"Write verification failed — missing: {path}")
+
+    size = path.stat().st_size
+    if size < min_bytes:
+        raise RuntimeError(f"Write verification failed — tiny file ({size} bytes): {path}")
+
+    # DriveFS can lag; brief retry on row count.
+    last_err: Exception | None = None
+    for attempt in range(5):
+        try:
+            # cheap line count (header + rows); utf-8-sig ok as text
+            with open(path, "r", encoding="utf-8-sig", newline="") as f:
+                lines = sum(1 for _ in f)
+            data_rows = max(lines - 1, 0)
+            if data_rows != expected_rows:
+                raise RuntimeError(
+                    f"Write verification failed — {path.name} has {data_rows:,} data "
+                    f"rows, expected {expected_rows:,} (path={path})"
+                )
+            mtime = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(path.stat().st_mtime))
+            print(
+                f"[extract] verified {path.name} rows={data_rows:,} "
+                f"size={size:,} mtime={mtime} path={path}"
+            )
+            return
+        except Exception as exc:  # noqa: BLE001 — retry DriveFS lag
+            last_err = exc
+            time.sleep(0.4 * (attempt + 1))
+    raise RuntimeError(str(last_err))
+
+
 def extract_tables(
     site: str,
     *,
@@ -109,8 +187,17 @@ def extract_tables(
     """
     site = site.lower()
     eng = engine or mssql_engine(site)
-    out = Path(out_dir) if out_dir else paths.ensure_dir(paths.raw_dir())
-    out.mkdir(parents=True, exist_ok=True)
+    out = Path(out_dir) if out_dir else paths.raw_dir()
+    if not out.exists():
+        raise FileNotFoundError(
+            f"Raw output folder does not exist: {out}\n"
+            "Set KCW_DRIVE_ROOT or KCW_ANALYTICS_DATA_ROOT to the real Shared Drive "
+            "path (do not let the tool create a fake local folder)."
+        )
+    if not out.is_dir():
+        raise NotADirectoryError(f"Raw output path is not a directory: {out}")
+
+    print(f"[extract] site={site} out_dir={out}")
 
     if tables is None:
         if site == "syp" and os.getenv("PARTS9_SYP_FULL_EXTRACT", "").strip() not in (
@@ -125,18 +212,34 @@ def extract_tables(
             tables = tuple(TABLE_SPECS.keys())
 
     written: dict[str, Path] = {}
+    errors: list[str] = []
+
     for table in tables:
         spec = TABLE_SPECS[table]
-        print(f"[extract] {site} {table} ...")
-        if spec["years"] is None:
-            df = read_full_table(eng, table)
-        else:
-            df = read_last_years(eng, table, spec["years"])
+        years = _years_for(site, table)
         path = out / f"raw_{site}_{spec['suffix']}.csv"
-        df.to_csv(path, index=False, encoding="utf-8-sig")
-        written[table] = path
-        print(f"[extract] wrote {path.name} rows={len(df):,}")
+        print(f"[extract] {site} {table} -> {path.name} ...")
+        try:
+            if years is None:
+                df = read_full_table(eng, table)
+            else:
+                df = read_last_years(eng, table, years)
+            write_csv_atomic(df, path)
+            verify_csv_write(path, len(df))
+            written[table] = path
+            print(f"[extract] wrote {path.name} rows={len(df):,}")
+        except Exception as exc:  # noqa: BLE001 — collect per-table, fail at end
+            msg = f"{table} ({path.name}): {exc}"
+            errors.append(msg)
+            print(f"[extract] FAILED {msg}")
 
+    if errors:
+        raise RuntimeError(
+            "Extract incomplete — some files were not updated on disk:\n  - "
+            + "\n  - ".join(errors)
+        )
+
+    print(f"[extract] OK site={site} files={len(written)}")
     return written
 
 
