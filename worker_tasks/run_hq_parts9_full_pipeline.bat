@@ -47,15 +47,20 @@ if errorlevel 1 goto :fail
 call :run_nb "20_vat_sales_nonvat_purchase_report.ipynb" fail
 if errorlevel 1 goto :fail
 
-REM Prefer CLI catch-up (idempotent). Falls back to notebook if CLI fails to import.
+REM Prefer CLI catch-up (idempotent). Falls back to notebook if CLI fails.
 echo.
 echo ------------------------------------------
 echo Running: TAR catch-up (CLI)
 echo ------------------------------------------
 set "TAR_LOG=%KCW_ANALYTICS_LOG_DIR%\tar_catchup.log"
+set "PYTHONPATH=%cd%;%PYTHONPATH%"
 "%PY%" -m src.kcw.pipeline tar --catch-up > "%TAR_LOG%" 2>&1
 if %ERRORLEVEL% NEQ 0 (
-    echo CLI TAR catch-up failed — falling back to notebook
+    echo CLI TAR catch-up failed - falling back to notebook
+    echo Check log: "%TAR_LOG%"
+    echo --- last lines of tar_catchup.log ---
+    powershell -NoProfile -Command "Get-Content -LiteralPath '%TAR_LOG%' -Tail 40 -ErrorAction SilentlyContinue"
+    echo ------------------------------------
     call :run_nb "21_tar_daily_supabase.ipynb" continue
 ) else (
     echo DONE: TAR catch-up CLI
