@@ -29,7 +29,9 @@ echo Repo: %cd%
 echo Log: %LOG%
 echo ==========================================
 
-"%KCW_ANALYTICS_PYTHON%" -m src.kcw.pipeline extract --site hq > "%LOG%" 2>&1
+"%KCW_ANALYTICS_PYTHON%" -c "from src.kcw import paths; print('raw_dir=', paths.raw_dir())" > "%LOG%" 2>&1
+
+"%KCW_ANALYTICS_PYTHON%" -m src.kcw.pipeline extract --site hq >> "%LOG%" 2>&1
 if %ERRORLEVEL% NEQ 0 (
     echo FAILED: HQ extract
     echo Check log: "%LOG%"
@@ -37,4 +39,5 @@ if %ERRORLEVEL% NEQ 0 (
 )
 
 echo DONE: HQ extract
+echo Check Drive timestamps for raw_hq_sidet_sales_lines.csv and raw_hq_icmas_products.csv
 exit /b 0

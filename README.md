@@ -30,7 +30,9 @@ Schedule **SYP before HQ B** (e.g. SYP 06:00, HQ 06:30) so both site raw files e
 
 Copy [`.env.example`](.env.example) → `.env` and optionally [`paths.yaml.example`](paths.yaml.example) → `paths.yaml`.
 
-Required: `KCW_ANALYTICS_PYTHON`. Recommended: `KCW_DRIVE_ROOT`, `SUPABASE_DB_URL` or `DB_PASSWORD`, HQ `PARTS9_HQ_*` credentials.
+Required: `KCW_ANALYTICS_PYTHON`. Recommended: `KCW_DRIVE_ROOT` or `KCW_ANALYTICS_DATA_ROOT` (use the `G:\Shared drives\...` path — do not point at a DriveFS AppData cache path), `SUPABASE_DB_URL` or `DB_PASSWORD`, HQ `PARTS9_HQ_*` credentials.
+
+Extract writes CSVs atomically (temp + replace) and verifies row counts on disk so Google Drive File Stream cannot silently leave large files like `raw_syp_sidet_sales_lines.csv` / `raw_syp_icmas_products.csv` (and the HQ equivalents) stale. Notebook [`51_parts9_to_drive.ipynb`](notebooks/51_parts9_to_drive.ipynb) uses the same atomic helper for HQ raw + curated writes.
 
 ## CLI (BAT and Claude Cowork)
 
