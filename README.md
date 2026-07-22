@@ -32,7 +32,13 @@ Copy [`.env.example`](.env.example) → `.env` and optionally [`paths.yaml.examp
 
 Required: `KCW_ANALYTICS_PYTHON`. Recommended: `KCW_DRIVE_ROOT` or `KCW_ANALYTICS_DATA_ROOT` (use the `G:\Shared drives\...` path — do not point at a DriveFS AppData cache path), `SUPABASE_DB_URL` or `DB_PASSWORD`, HQ `PARTS9_HQ_*` credentials.
 
-Extract writes CSVs with the same direct `to_csv` as the original SYP/HQ notebooks (DriveFS does not tolerate fsync / cross-volume replace). A soft post-write check logs size/mtime and, when possible, a proper CSV row count.
+Extract for **SYP Task Scheduler** runs the original-style notebook
+([`51_syp_parts9_to_drive_raw.ipynb`](notebooks/51_syp_parts9_to_drive_raw.ipynb)) via nbconvert —
+`chdir` + relative `to_csv`, same as the local BAT that historically worked.
+
+The CLI (`python -m src.kcw.pipeline extract`) is still available for HQ/Cowork; it writes via
+local-temp → Drive replace (**no fsync**) so large `sidet`/`icmas` overwrites sync, and verify is
+log-only (never aborts a good copy).
 
 ## CLI (BAT and Claude Cowork)
 
