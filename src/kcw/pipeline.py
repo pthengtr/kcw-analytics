@@ -119,13 +119,24 @@ def main(argv: list[str] | None = None) -> int:
     try:
         from dotenv import load_dotenv
 
-        load_dotenv()
+        # Load repo .env even if cwd differs.
+        from pathlib import Path as _Path
+
+        load_dotenv(_Path(__file__).resolve().parents[2] / ".env")
+        load_dotenv()  # also cwd .env if present
     except ImportError:
-        pass
+        print(
+            "WARN: python-dotenv not installed; relying on process env only. "
+            "pip install python-dotenv"
+        )
 
     parser = build_parser()
     args = parser.parse_args(argv)
-    return int(args.func(args) or 0)
+    try:
+        return int(args.func(args) or 0)
+    except Exception as exc:
+        print(f"ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
+        raise
 
 
 if __name__ == "__main__":
