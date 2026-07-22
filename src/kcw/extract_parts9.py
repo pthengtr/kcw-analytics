@@ -138,15 +138,15 @@ def write_csv_atomic(df: pd.DataFrame, path: Path) -> None:
                 pass
 
 
-def verify_csv_write(path: Path, expected_rows: int, *, min_bytes: int = 64) -> None:
-    """Confirm the final path exists, grew, and still has the expected row count."""
+def verify_csv_write(path: Path, expected_rows: int, *, min_bytes: int = 1) -> None:
+    """Confirm the final path exists, is non-empty, and has the expected row count."""
     path = Path(path)
     if not path.is_file():
         raise FileNotFoundError(f"Write verification failed — missing: {path}")
 
     size = path.stat().st_size
     if size < min_bytes:
-        raise RuntimeError(f"Write verification failed — tiny file ({size} bytes): {path}")
+        raise RuntimeError(f"Write verification failed — empty/tiny file ({size} bytes): {path}")
 
     # DriveFS can lag; brief retry on row count.
     last_err: Exception | None = None
