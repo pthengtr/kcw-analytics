@@ -2,6 +2,8 @@
 setlocal EnableExtensions EnableDelayedExpansion
 
 REM SYP: PARTS9 (local SQL) -> Google Drive 01_raw (raw_syp_*.csv)
+REM Runs the original-style notebook via nbconvert (same approach as your
+REM old local BAT that never raised Errno 9 / false verify failures).
 REM Schedule this BEFORE the HQ full pipeline.
 
 cd /d "%~dp0.."
@@ -20,24 +22,37 @@ if "%KCW_ANALYTICS_PYTHON%"=="" (
 if "%KCW_ANALYTICS_LOG_DIR%"=="" set "KCW_ANALYTICS_LOG_DIR=%cd%\logs"
 if not exist "%KCW_ANALYTICS_LOG_DIR%" mkdir "%KCW_ANALYTICS_LOG_DIR%"
 
+set "NBDIR=%cd%\notebooks"
+set "NBNAME=51_syp_parts9_to_drive_raw.ipynb"
+set "NB=%NBDIR%\%NBNAME%"
+set "OUT=%KCW_ANALYTICS_LOG_DIR%\%NBNAME:.ipynb=.executed.ipynb%"
 set "LOG=%KCW_ANALYTICS_LOG_DIR%\extract_syp.log"
 
 echo ==========================================
-echo SYP PARTS9 -^> Drive raw
+echo SYP PARTS9 -^> Drive raw (notebook, original-style)
 echo Python: %KCW_ANALYTICS_PYTHON%
-echo Repo: %cd%
+echo Notebook: %NB%
 echo Log: %LOG%
 echo ==========================================
 
-"%KCW_ANALYTICS_PYTHON%" -c "from src.kcw import paths; print('raw_dir=', paths.raw_dir())" >> "%LOG%" 2>&1
+if not exist "%NB%" (
+    echo FAILED: notebook not found "%NB%"
+    exit /b 1
+)
 
-"%KCW_ANALYTICS_PYTHON%" -m src.kcw.pipeline extract --site syp >> "%LOG%" 2>&1
+"%KCW_ANALYTICS_PYTHON%" -m jupyter nbconvert ^
+    --to notebook ^
+    --execute ^
+    --ExecutePreprocessor.kernel_name=python3 ^
+    "%NB%" ^
+    --output "%OUT%" > "%LOG%" 2>&1
+
 if %ERRORLEVEL% NEQ 0 (
-    echo FAILED: SYP extract
+    echo FAILED: SYP extract notebook
     echo Check log: "%LOG%"
     exit /b %ERRORLEVEL%
 )
 
 echo DONE: SYP extract
-echo Check Drive timestamps for raw_syp_sidet_sales_lines.csv and raw_syp_icmas_products.csv
+echo Check Drive timestamps for all five raw_syp_*.csv files
 exit /b 0

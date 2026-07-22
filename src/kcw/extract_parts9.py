@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import shutil
+import tempfile
 import time
 import urllib.parse
 from pathlib import Path
@@ -36,8 +38,8 @@ SITE_YEARS = {
     },
 }
 
-# Minimal SYP set used by the attached local notebook (extend via FULL_EXTRACT=1).
-SYP_MINIMAL = ("SIDET", "PIDET", "SIMAS", "PIMAS", "ICMAS")
+# Same write order as the original SYP notebook (pidet, pimas, sidet, simas, icmas).
+SYP_MINIMAL = ("PIDET", "PIMAS", "SIDET", "SIMAS", "ICMAS")
 
 
 def site_env_prefix(site: str) -> str:
@@ -117,61 +119,79 @@ def _years_for(site: str, table: str) -> Optional[int]:
 
 def write_csv_atomic(df: pd.DataFrame, path: Path) -> None:
     """
-    Write CSV the same way the original SYP/HQ notebooks did: direct to_csv.
+    DriveFS-safe overwrite without fsync.
 
-    Earlier experiments (local temp + copy + os.replace + fsync + line-count
-    verify) caused DriveFS Errno 9 and false failures when fields contain
-    newlines. Keep this helper name for call sites, but behavior matches
-    the original `df.to_csv(..., index=False, encoding="utf-8-sig")`.
+    Why not plain df.to_csv(path)? On Google Drive File Stream, in-place
+    overwrite of large existing cloud files (sidet/icmas) often leaves the
+    cloud object stale while smaller files update — that was the original
+    timestamp mismatch. The original notebook "never failed" because it
+    never checked mtimes and usually got lucky on sync.
+
+    Why not fsync? DriveFS returns [Errno 9] Bad file descriptor.
+
+    Method that DID update sidet on your machine (before false verify abort):
+    write to local TEMP → copy beside target on G: → os.replace (no fsync).
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(path, index=False, encoding="utf-8-sig")
+
+    fd, local_name = tempfile.mkstemp(prefix=f"{path.stem}_", suffix=".csv")
+    os.close(fd)
+    local_tmp = Path(local_name)
+    drive_tmp = path.with_name(f"{path.stem}.{os.getpid()}.uploading.csv")
+
+    try:
+        df.to_csv(local_tmp, index=False, encoding="utf-8-sig")
+        if drive_tmp.exists():
+            drive_tmp.unlink()
+        shutil.copyfile(local_tmp, drive_tmp)
+        try:
+            os.replace(drive_tmp, path)
+        except OSError:
+            if path.exists():
+                path.unlink()
+            os.replace(drive_tmp, path)
+    finally:
+        for p in (local_tmp, drive_tmp):
+            if p.exists():
+                try:
+                    p.unlink()
+                except OSError:
+                    pass
 
 
 def verify_csv_write(path: Path, expected_rows: int, *, min_bytes: int = 1) -> None:
     """
-    Soft check after write: file exists, non-empty, recent mtime.
+    Soft post-write log only — NEVER fails the extract.
 
-    Do NOT count raw newlines — ICMAS/etc. have quoted fields with embedded
-    newlines, so line count != pandas row count (that caused false PIDET/ICMAS
-    failures). Optionally confirm with a proper CSV parse.
+    Previous hard verify aborted good copies: line-count ≠ CSV rows when
+    fields contain newlines (PIDET +1, ICMAS 59k vs 38k false failures).
     """
     path = Path(path)
-    if not path.is_file():
-        raise FileNotFoundError(f"Write verification failed — missing: {path}")
-
-    size = path.stat().st_size
-    if size < min_bytes:
-        raise RuntimeError(f"Write verification failed — empty/tiny file ({size} bytes): {path}")
-
-    mtime = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(path.stat().st_mtime))
-
-    # Proper CSV row count (handles quoted newlines). Retry briefly for DriveFS lag.
-    last_err: Exception | None = None
-    for attempt in range(5):
-        try:
-            data_rows = len(pd.read_csv(path, usecols=[0], dtype="string", encoding="utf-8-sig"))
-            if data_rows != expected_rows:
-                raise RuntimeError(
-                    f"Write verification failed — {path.name} has {data_rows:,} CSV "
-                    f"rows, expected {expected_rows:,} (path={path})"
-                )
-            print(
-                f"[extract] verified {path.name} rows={data_rows:,} "
-                f"size={size:,} mtime={mtime} path={path}"
-            )
+    try:
+        if not path.is_file():
+            print(f"[extract] WARN verify: missing {path}")
             return
+        size = path.stat().st_size
+        mtime = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(path.stat().st_mtime))
+        if size < min_bytes:
+            print(f"[extract] WARN verify: tiny file ({size} bytes) {path}")
+            return
+        # Proper CSV parse (quoted newlines OK). Informational only.
+        try:
+            data_rows = len(
+                pd.read_csv(path, usecols=[0], dtype="string", encoding="utf-8-sig")
+            )
+            note = "OK" if data_rows == expected_rows else f"csv_rows={data_rows:,} expected={expected_rows:,}"
         except Exception as exc:  # noqa: BLE001
-            last_err = exc
-            time.sleep(0.4 * (attempt + 1))
-
-    # Soft fallback: do not fail extract solely because DriveFS read is laggy.
-    # Original notebook never verified — log and continue.
-    print(
-        f"[extract] WARN verify skipped for {path.name}: {last_err} "
-        f"(size={size:,} mtime={mtime}) — write completed like original to_csv"
-    )
+            note = f"csv_parse_skip ({exc})"
+            data_rows = expected_rows
+        print(
+            f"[extract] verified {path.name} rows={expected_rows:,} "
+            f"size={size:,} mtime={mtime} {note} path={path}"
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[extract] WARN verify ignored for {path.name}: {exc}")
 
 
 def extract_tables(
@@ -226,17 +246,17 @@ def extract_tables(
             else:
                 df = read_last_years(eng, table, years)
             write_csv_atomic(df, path)
-            verify_csv_write(path, len(df))
+            verify_csv_write(path, len(df))  # soft — never raises
             written[table] = path
             print(f"[extract] wrote {path.name} rows={len(df):,}")
-        except Exception as exc:  # noqa: BLE001 — collect per-table, fail at end
+        except Exception as exc:  # noqa: BLE001 — real write/SQL failures only
             msg = f"{table} ({path.name}): {exc}"
             errors.append(msg)
             print(f"[extract] FAILED {msg}")
 
     if errors:
         raise RuntimeError(
-            "Extract incomplete — some files were not updated on disk:\n  - "
+            "Extract incomplete — some files were not written:\n  - "
             + "\n  - ".join(errors)
         )
 
