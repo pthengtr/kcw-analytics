@@ -117,25 +117,45 @@ def _years_for(site: str, table: str) -> Optional[int]:
 
 def write_csv_atomic(df: pd.DataFrame, path: Path) -> None:
     """
-    Write via temp file + os.replace so Google Drive File Stream picks up
-    large overwrites (direct to_csv on an existing cloud-only file often
-    leaves the cloud object stale — seen on sidet/icmas).
+    DriveFS-safe CSV overwrite.
+
+    Direct to_csv on an existing Shared Drive file often leaves the cloud
+    object stale (sidet/icmas). os.fsync on DriveFS also fails with
+    [Errno 9] Bad file descriptor on Windows.
+
+    Strategy: write to a local temp file, copy beside the target on Drive,
+    then os.replace (same volume). Fallback: unlink target + copyfile.
     """
+    import shutil
+    import tempfile
+
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+
+    fd, local_name = tempfile.mkstemp(prefix=f"{path.stem}_", suffix=".csv")
+    os.close(fd)
+    local_tmp = Path(local_name)
+    drive_tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+
     try:
-        df.to_csv(tmp, index=False, encoding="utf-8-sig")
-        # Flush to disk before replace (helps DriveFS).
-        with open(tmp, "rb") as f:
-            os.fsync(f.fileno())
-        os.replace(tmp, path)
+        df.to_csv(local_tmp, index=False, encoding="utf-8-sig")
+        # Copy onto Drive volume first (local TEMP is usually another drive;
+        # os.replace across volumes fails on Windows).
+        shutil.copyfile(local_tmp, drive_tmp)
+        try:
+            os.replace(drive_tmp, path)
+        except OSError:
+            # Some DriveFS builds reject replace-on-existing; force new object.
+            if path.exists():
+                path.unlink()
+            os.replace(drive_tmp, path)
     finally:
-        if tmp.exists():
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
+        for p in (local_tmp, drive_tmp):
+            if p.exists():
+                try:
+                    p.unlink()
+                except OSError:
+                    pass
 
 
 def verify_csv_write(path: Path, expected_rows: int, *, min_bytes: int = 1) -> None:
