@@ -1,0 +1,7 @@
+# Copy to paths.yaml (gitignored) or set the same keys via environment.
+
+# Folder that contains "KCW-Data" (Windows Drive File Stream / Colab / Cowork mount)
+drive_root: "G:\\Shared drives"
+
+# Optional override: full path to kcw_analytics (skips drive_root/KCW-Data/kcw_analytics)
+# analytics_root: "G:\\Shared drives\\KCW-Data\\kcw_analytics"

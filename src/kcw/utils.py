@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-\
+
 def remove_vat_inclusive(
     df,
     amount_col="AMOUNT",
