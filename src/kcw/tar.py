@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Iterable, Optional, Sequence, Union
+from typing import Optional, Sequence, Union
 
 import pandas as pd
 
