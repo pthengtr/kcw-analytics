@@ -273,28 +273,32 @@ def copy_csv_to_supabase(
 
 
 def max_fin_billdate(db_url: Optional[str] = None) -> Optional[date]:
-    rows = run_sql(
-        "select billgen.max_fin_billdate();",
-        db_url=db_url,
-        fetch=True,
-    )
-    if not rows or rows[0][0] is None:
-        # Fallback if migration not applied yet
+    """Latest billdate across fin_*; works even if catch-up SQL migration is not applied."""
+    fallback_sql = """
+        select max(billdate) from (
+            select billdate from billgen.fin_tar_lines
+            union all
+            select billdate from billgen.fin_3tar_lines
+            union all
+            select billdate from billgen.fin_cntar_lines
+            union all
+            select billdate from billgen.fin_3cntar_lines
+        ) t;
+    """
+    try:
         rows = run_sql(
-            """
-            select max(billdate) from (
-                select billdate from billgen.fin_tar_lines
-                union all
-                select billdate from billgen.fin_3tar_lines
-                union all
-                select billdate from billgen.fin_cntar_lines
-                union all
-                select billdate from billgen.fin_3cntar_lines
-            ) t;
-            """,
+            "select billgen.max_fin_billdate();",
             db_url=db_url,
             fetch=True,
         )
+    except Exception as exc:
+        # Migration 20260722160000_tar_catchup_helpers.sql not applied yet.
+        print(f"[tar] billgen.max_fin_billdate missing ({exc}); using SQL fallback")
+        rows = run_sql(fallback_sql, db_url=db_url, fetch=True)
+
+    if not rows or rows[0][0] is None:
+        rows = run_sql(fallback_sql, db_url=db_url, fetch=True)
+
     value = rows[0][0] if rows else None
     return value if value is None else to_date(value)
 
