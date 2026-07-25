@@ -27,8 +27,10 @@ def filter_last_year_from_latest(
 
     out = df if inplace else df.copy()
 
-    # Parse to datetime safely
-    dt = pd.to_datetime(out[date_col], errors="coerce")
+    # Parse to datetime safely. Use mixed formats: HQ curated dates are often
+    # 'YYYY-MM-DD HH:MM:SS' while SYP raw/csv dates are 'YYYY-MM-D'. Default
+    # inference can lock onto the first format and turn the other into NaT.
+    dt = pd.to_datetime(out[date_col], errors="coerce", format="mixed")
 
     latest = dt.max()
     if pd.isna(latest):
