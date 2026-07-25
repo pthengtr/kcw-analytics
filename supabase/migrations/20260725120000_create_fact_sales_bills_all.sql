@@ -63,3 +63,7 @@ create index if not exists fact_sales_bills_all_billdate_idx
 
 create index if not exists fact_sales_bills_all_branch_billno_idx
     on curated_kcw.fact_sales_bills_all ("BRANCH", "BILLNO");
+
+-- Match grant_raw_curated_kcw_select for sibling curated facts.
+grant select on curated_kcw.fact_sales_bills_all to anon, authenticated, service_role;
+grant select on curated_kcw.fact_sales_bills_all_stg to anon, authenticated, service_role;
