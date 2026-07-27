@@ -68,8 +68,26 @@ PIMAS_PIDET_UPLOADS = (
     },
 )
 
+# Product masters: both sites (Drive extract already writes these CSVs).
+ICMAS_UPLOADS = (
+    {
+        "csv_name": "raw_hq_icmas_products.csv",
+        "main_table": "raw_kcw.raw_hq_icmas_products",
+        "staging_table": "raw_kcw.raw_hq_icmas_products_stg",
+        "site": "hq",
+    },
+    {
+        "csv_name": "raw_syp_icmas_products.csv",
+        "main_table": "raw_kcw.raw_syp_icmas_products",
+        "staging_table": "raw_kcw.raw_syp_icmas_products_stg",
+        "site": "syp",
+    },
+)
+
 # Daily HQ A upload set (run after SYP + HQ extracts land on Drive).
-DAILY_RAW_UPLOADS = ARMAS_APMAS_UPLOADS + POMAS_PODET_UPLOADS + PIMAS_PIDET_UPLOADS
+DAILY_RAW_UPLOADS = (
+    ARMAS_APMAS_UPLOADS + POMAS_PODET_UPLOADS + PIMAS_PIDET_UPLOADS + ICMAS_UPLOADS
+)
 
 
 def refresh_table_via_staging_df(
@@ -278,6 +296,7 @@ def upload_daily_raw(
       - HQ ARMAS / APMAS
       - HQ + SYP POMAS / PODET
       - HQ PIMAS / PIDET (purchase invoices; HQ only)
+      - HQ + SYP ICMAS (product masters)
     """
     return upload_raw_specs(
         DAILY_RAW_UPLOADS,
