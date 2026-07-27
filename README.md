@@ -22,20 +22,23 @@ Local SQL Server is the only thing that must stay on the shop PCs. Everything af
 
 | Machine | Script | Purpose |
 |---------|--------|---------|
-| **SYP** | [`worker_tasks/run_syp_parts9_to_drive_raw.bat`](worker_tasks/run_syp_parts9_to_drive_raw.bat) | `PARTS9` → `raw_syp_*.csv` |
-| **HQ A** | [`worker_tasks/run_hq_parts9_to_drive_raw.bat`](worker_tasks/run_hq_parts9_to_drive_raw.bat) | `PARTS9` → `raw_hq_*.csv`, then ARMAS/APMAS → Supabase `raw_kcw` |
+| **SYP** | [`worker_tasks/run_syp_parts9_to_drive_raw.bat`](worker_tasks/run_syp_parts9_to_drive_raw.bat) | `PARTS9` → `raw_syp_*.csv` (POMAS/PODET + sales + ICMAS) |
+| **SYP** | [`worker_tasks/run_syp_pomas_podet_sync.bat`](worker_tasks/run_syp_pomas_podet_sync.bat) | POMAS/PODET only → Drive + Supabase `raw_syp_*` |
+| **HQ A** | [`worker_tasks/run_hq_parts9_to_drive_raw.bat`](worker_tasks/run_hq_parts9_to_drive_raw.bat) | `PARTS9` → `raw_hq_*.csv`, then daily raw → Supabase `raw_kcw` |
+| **HQ** | [`worker_tasks/run_hq_pomas_podet_sync.bat`](worker_tasks/run_hq_pomas_podet_sync.bat) | POMAS/PODET only → Drive + Supabase `raw_hq_*` |
 | **HQ B** | [`worker_tasks/run_hq_parts9_full_pipeline.bat`](worker_tasks/run_hq_parts9_full_pipeline.bat) | HQ A + archive + curated + VAT/TAR + Excel + upload |
 
-Schedule **SYP before HQ B** (e.g. SYP 06:00, HQ 06:30) so both site raw files exist.
+Schedule **SYP before HQ A/B** (e.g. SYP 06:00, HQ 06:30) so both site raw files exist (HQ uploads SYP POs from Drive).
 
 Copy [`.env.example`](.env.example) → `.env` and optionally [`paths.yaml.example`](paths.yaml.example) → `paths.yaml`.
 
 Required: `KCW_ANALYTICS_PYTHON`. Recommended: `KCW_DRIVE_ROOT` or `KCW_ANALYTICS_DATA_ROOT` (use the `G:\Shared drives\...` path — do not point at a DriveFS AppData cache path), `SUPABASE_DB_URL` or `DB_PASSWORD`, HQ `PARTS9_HQ_*` credentials.
 
-Extract for **SYP Task Scheduler** runs [`51_syp_parts9_to_drive_raw.ipynb`](notebooks/51_syp_parts9_to_drive_raw.ipynb) via nbconvert.
-That notebook writes each CSV via **local TEMP → copy onto Drive → `os.replace`** (no `fsync`) so large
-`raw_syp_sidet_*` / `raw_syp_icmas_*` files update under Google Drive File Stream. Plain in-place `to_csv`
-often left those two stale while smaller files updated.
+**SYP Task Scheduler** runs `python -m src.kcw.pipeline extract --site syp` (DriveFS-safe TEMP → copy → `os.replace`). Manual notebook: [`51_syp_parts9_to_drive_raw.ipynb`](notebooks/51_syp_parts9_to_drive_raw.ipynb).
+
+Daily extract sets:
+- **HQ**: full `TABLE_SPECS` including POMAS/PODET + PIMAS/PIDET
+- **SYP**: POMAS/PODET + SIDET/SIMAS/ICMAS (no PIMAS/PIDET — purchases are HQ-only)
 
 ## CLI (BAT and Claude Cowork)
 
@@ -45,13 +48,29 @@ Run from repo root:
 python -m src.kcw.pipeline gap-check
 python -m src.kcw.pipeline extract --site hq
 python -m src.kcw.pipeline extract --site syp
+python -m src.kcw.pipeline extract --site hq --tables POMAS,PODET
+python -m src.kcw.pipeline sync-pomas-podet --site hq
+python -m src.kcw.pipeline sync-pomas-podet --site syp
+python -m src.kcw.pipeline upload-pomas-podet --site hq
+python -m src.kcw.pipeline upload-daily-raw
 python -m src.kcw.pipeline upload-armas-apmas
 python -m src.kcw.pipeline tar --catch-up
 python -m src.kcw.pipeline tar --date 2026-07-20
 python -m src.kcw.pipeline tar --reprocess 2026-07-20
 ```
 
-`upload-armas-apmas` reads Drive `raw_hq_armas_receivable.csv` / `raw_hq_apmas_payable.csv` and replaces `raw_kcw.raw_hq_armas_receivable` / `raw_kcw.raw_hq_apmas_payable` via staging (HQ A runs this after extract).
+`sync-pomas-podet --site {hq|syp}` extracts only POMAS/PODET to Drive, then uploads that site's CSVs to `raw_kcw` (used by the focused HQ/SYP PO worker BATs).
+
+`upload-daily-raw` (HQ A after extract) replaces these `raw_kcw` tables via staging from Drive CSVs:
+
+| CSV | Table | Notes |
+|-----|-------|-------|
+| `raw_hq_armas_receivable.csv` / `raw_hq_apmas_payable.csv` | matching `raw_hq_*` | account masters |
+| `raw_{hq,syp}_pomas_purchase_orders.csv` | matching site tables | PO headers |
+| `raw_{hq,syp}_podet_purchase_order_lines.csv` | matching site tables | PO lines |
+| `raw_hq_pimas_purchase_bills.csv` / `raw_hq_pidet_purchase_lines.csv` | HQ only | purchase invoices |
+
+`upload-armas-apmas` remains available as a narrower alias (ARMAS/APMAS only).
 ### TAR catch-up (idempotent)
 
 - Starts at `max(fin_* billdate) + 1` through `min(today, max eligible raw BILLDATE)`.

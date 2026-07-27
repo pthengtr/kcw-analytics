@@ -1,4 +1,4 @@
-"""Smoke checks for ARMAS/APMAS Supabase upload wiring."""
+"""Smoke checks for daily raw Supabase upload wiring."""
 
 from __future__ import annotations
 
@@ -11,26 +11,55 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from src.kcw.pipeline import build_parser  # noqa: E402
-from src.kcw.upload_raw import ARMAS_APMAS_UPLOADS, refresh_table_via_staging_df  # noqa: E402
+from src.kcw.upload_raw import (  # noqa: E402
+    ARMAS_APMAS_UPLOADS,
+    DAILY_RAW_UPLOADS,
+    PIMAS_PIDET_UPLOADS,
+    POMAS_PODET_UPLOADS,
+    refresh_table_via_staging_df,
+)
 
 
-def test_cli_has_upload_command():
+def test_cli_has_upload_commands():
     parser = build_parser()
     args = parser.parse_args(["upload-armas-apmas"])
     assert args.func.__name__ == "cmd_upload_armas_apmas"
-    print("CLI upload-armas-apmas registered")
+    args = parser.parse_args(["upload-daily-raw"])
+    assert args.func.__name__ == "cmd_upload_daily_raw"
+    args = parser.parse_args(["upload-pomas-podet", "--site", "hq"])
+    assert args.func.__name__ == "cmd_upload_pomas_podet"
+    args = parser.parse_args(["sync-pomas-podet", "--site", "syp"])
+    assert args.func.__name__ == "cmd_sync_pomas_podet"
+    args = parser.parse_args(["extract", "--site", "hq", "--tables", "POMAS,PODET"])
+    assert args.tables == "POMAS,PODET"
+    print("CLI upload/sync PO commands registered")
 
 
 def test_upload_specs():
-    names = {s["csv_name"] for s in ARMAS_APMAS_UPLOADS}
-    assert names == {
+    armas = {s["csv_name"] for s in ARMAS_APMAS_UPLOADS}
+    assert armas == {
         "raw_hq_armas_receivable.csv",
         "raw_hq_apmas_payable.csv",
     }
-    for spec in ARMAS_APMAS_UPLOADS:
+    po = {s["csv_name"] for s in POMAS_PODET_UPLOADS}
+    assert po == {
+        "raw_hq_pomas_purchase_orders.csv",
+        "raw_hq_podet_purchase_order_lines.csv",
+        "raw_syp_pomas_purchase_orders.csv",
+        "raw_syp_podet_purchase_order_lines.csv",
+    }
+    pi = {s["csv_name"] for s in PIMAS_PIDET_UPLOADS}
+    assert pi == {
+        "raw_hq_pimas_purchase_bills.csv",
+        "raw_hq_pidet_purchase_lines.csv",
+    }
+    assert len(DAILY_RAW_UPLOADS) == len(ARMAS_APMAS_UPLOADS) + len(POMAS_PODET_UPLOADS) + len(
+        PIMAS_PIDET_UPLOADS
+    )
+    for spec in DAILY_RAW_UPLOADS:
         assert spec["main_table"].startswith("raw_kcw.")
         assert spec["staging_table"].endswith("_stg")
-    print("ARMAS/APMAS upload specs OK")
+    print("Daily raw upload specs OK")
 
 
 def test_refresh_rejects_empty_df():
@@ -51,31 +80,16 @@ def test_refresh_rejects_empty_df():
     print("Empty dataframe guard OK")
 
 
-def test_expected_payload_columns():
-    expected = [
-        "ID",
-        "JOURMODE",
-        "ACCTTYPE",
-        "ACCTNO",
-        "ACCTNAME",
-        "ADDR1",
-        "ADDR2",
-        "PHONE",
-        "MOBILE",
-        "FAX",
-        "CONTACT",
-        "EMAIL",
-        "TERM",
-        "ALLOW",
-        "ATPRICE",
-        "MARKUP",
-        "BEGDATE",
-        "ENDDATE",
-        "REMARKS",
-        "CANCELED",
-    ]
-    assert len(expected) == 20
-    print("Expected ARMAS/APMAS payload columns OK")
+def test_extract_includes_pomas_podet():
+    from src.kcw.extract_parts9 import PO_TABLES, SYP_MINIMAL, TABLE_SPECS
+
+    assert "POMAS" in TABLE_SPECS and "PODET" in TABLE_SPECS
+    assert TABLE_SPECS["POMAS"]["date_col"] == "DOCDATE"
+    assert TABLE_SPECS["PODET"]["date_col"] == "DOCDATE"
+    assert "POMAS" in SYP_MINIMAL and "PODET" in SYP_MINIMAL
+    assert "PIMAS" not in SYP_MINIMAL and "PIDET" not in SYP_MINIMAL
+    assert PO_TABLES == ("PODET", "POMAS")
+    print("Extract TABLE_SPECS / SYP_MINIMAL / PO_TABLES OK")
 
 
 def test_supabase_db_url_rejects_https_api_url(monkeypatch_env=None):
@@ -116,9 +130,9 @@ def test_supabase_db_url_rejects_https_api_url(monkeypatch_env=None):
 
 
 if __name__ == "__main__":
-    test_cli_has_upload_command()
+    test_cli_has_upload_commands()
     test_upload_specs()
     test_refresh_rejects_empty_df()
-    test_expected_payload_columns()
+    test_extract_includes_pomas_podet()
     test_supabase_db_url_rejects_https_api_url()
-    print("\nAll ARMAS/APMAS upload checks passed.")
+    print("\nAll daily-raw upload checks passed.")

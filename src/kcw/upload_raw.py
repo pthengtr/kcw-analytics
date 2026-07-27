@@ -26,6 +26,51 @@ ARMAS_APMAS_UPLOADS = (
     },
 )
 
+# Purchase orders: both sites (POs can be raised at HQ or SYP).
+POMAS_PODET_UPLOADS = (
+    {
+        "csv_name": "raw_hq_pomas_purchase_orders.csv",
+        "main_table": "raw_kcw.raw_hq_pomas_purchase_orders",
+        "staging_table": "raw_kcw.raw_hq_pomas_purchase_orders_stg",
+        "site": "hq",
+    },
+    {
+        "csv_name": "raw_hq_podet_purchase_order_lines.csv",
+        "main_table": "raw_kcw.raw_hq_podet_purchase_order_lines",
+        "staging_table": "raw_kcw.raw_hq_podet_purchase_order_lines_stg",
+        "site": "hq",
+    },
+    {
+        "csv_name": "raw_syp_pomas_purchase_orders.csv",
+        "main_table": "raw_kcw.raw_syp_pomas_purchase_orders",
+        "staging_table": "raw_kcw.raw_syp_pomas_purchase_orders_stg",
+        "site": "syp",
+    },
+    {
+        "csv_name": "raw_syp_podet_purchase_order_lines.csv",
+        "main_table": "raw_kcw.raw_syp_podet_purchase_order_lines",
+        "staging_table": "raw_kcw.raw_syp_podet_purchase_order_lines_stg",
+        "site": "syp",
+    },
+)
+
+# Purchase invoices: HQ only (actual purchases / AP happen at HQ).
+PIMAS_PIDET_UPLOADS = (
+    {
+        "csv_name": "raw_hq_pimas_purchase_bills.csv",
+        "main_table": "raw_kcw.raw_hq_pimas_purchase_bills",
+        "staging_table": "raw_kcw.raw_hq_pimas_purchase_bills_stg",
+    },
+    {
+        "csv_name": "raw_hq_pidet_purchase_lines.csv",
+        "main_table": "raw_kcw.raw_hq_pidet_purchase_lines",
+        "staging_table": "raw_kcw.raw_hq_pidet_purchase_lines_stg",
+    },
+)
+
+# Daily HQ A upload set (run after SYP + HQ extracts land on Drive).
+DAILY_RAW_UPLOADS = ARMAS_APMAS_UPLOADS + POMAS_PODET_UPLOADS + PIMAS_PIDET_UPLOADS
+
 
 def refresh_table_via_staging_df(
     conn,
@@ -138,24 +183,23 @@ def _read_raw_csv(path: Path) -> pd.DataFrame:
     return pd.read_csv(path, dtype="string", encoding="utf-8-sig", low_memory=False)
 
 
-def upload_armas_apmas(
+def upload_raw_specs(
+    specs: tuple[dict, ...],
     *,
     raw_folder: Optional[Path] = None,
     db_url: Optional[str] = None,
+    label: str = "raw",
 ) -> list[dict]:
-    """
-    Read Drive raw_hq_armas_receivable.csv / raw_hq_apmas_payable.csv
-    and replace the matching raw_kcw tables via staging.
-    """
+    """Read Drive CSVs named in specs and replace matching raw_kcw tables."""
     import psycopg
 
     raw = Path(raw_folder) if raw_folder else paths.raw_dir()
     url = db_url or supabase_db_url()
     results: list[dict] = []
 
-    print(f"[upload-raw] raw_dir={raw}")
+    print(f"[upload-raw] label={label} raw_dir={raw} files={len(specs)}")
     with psycopg.connect(url) as conn:
-        for spec in ARMAS_APMAS_UPLOADS:
+        for spec in specs:
             csv_path = raw / spec["csv_name"]
             print(f"[upload-raw] reading {csv_path.name} ...")
             df = _read_raw_csv(csv_path)
@@ -173,5 +217,71 @@ def upload_armas_apmas(
             )
             results.append(result)
 
-    print(f"[upload-raw] OK armas/apmas files={len(results)}")
+    print(f"[upload-raw] OK {label} files={len(results)}")
     return results
+
+
+def upload_armas_apmas(
+    *,
+    raw_folder: Optional[Path] = None,
+    db_url: Optional[str] = None,
+) -> list[dict]:
+    """
+    Read Drive raw_hq_armas_receivable.csv / raw_hq_apmas_payable.csv
+    and replace the matching raw_kcw tables via staging.
+    """
+    return upload_raw_specs(
+        ARMAS_APMAS_UPLOADS,
+        raw_folder=raw_folder,
+        db_url=db_url,
+        label="armas/apmas",
+    )
+
+
+def upload_pomas_podet(
+    site: str | None = None,
+    *,
+    raw_folder: Optional[Path] = None,
+    db_url: Optional[str] = None,
+) -> list[dict]:
+    """
+    Upload POMAS/PODET Drive CSVs to raw_kcw.
+
+    site=None -> both HQ and SYP
+    site='hq'|'syp' -> that site only
+    """
+    if site is None:
+        specs = POMAS_PODET_UPLOADS
+        label = "pomas/podet"
+    else:
+        site = site.lower()
+        if site not in ("hq", "syp"):
+            raise ValueError("site must be 'hq', 'syp', or None")
+        specs = tuple(s for s in POMAS_PODET_UPLOADS if s["site"] == site)
+        label = f"pomas/podet-{site}"
+    return upload_raw_specs(
+        specs,
+        raw_folder=raw_folder,
+        db_url=db_url,
+        label=label,
+    )
+
+
+def upload_daily_raw(
+    *,
+    raw_folder: Optional[Path] = None,
+    db_url: Optional[str] = None,
+) -> list[dict]:
+    """
+    Daily Drive -> Supabase raw upload after SYP + HQ extracts:
+
+      - HQ ARMAS / APMAS
+      - HQ + SYP POMAS / PODET
+      - HQ PIMAS / PIDET (purchase invoices; HQ only)
+    """
+    return upload_raw_specs(
+        DAILY_RAW_UPLOADS,
+        raw_folder=raw_folder,
+        db_url=db_url,
+        label="daily-raw",
+    )
