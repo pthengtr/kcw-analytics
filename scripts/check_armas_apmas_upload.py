@@ -14,6 +14,7 @@ from src.kcw.pipeline import build_parser  # noqa: E402
 from src.kcw.upload_raw import (  # noqa: E402
     ARMAS_APMAS_UPLOADS,
     DAILY_RAW_UPLOADS,
+    ICMAS_UPLOADS,
     PIMAS_PIDET_UPLOADS,
     POMAS_PODET_UPLOADS,
     refresh_table_via_staging_df,
@@ -53,8 +54,16 @@ def test_upload_specs():
         "raw_hq_pimas_purchase_bills.csv",
         "raw_hq_pidet_purchase_lines.csv",
     }
-    assert len(DAILY_RAW_UPLOADS) == len(ARMAS_APMAS_UPLOADS) + len(POMAS_PODET_UPLOADS) + len(
-        PIMAS_PIDET_UPLOADS
+    icmas = {s["csv_name"] for s in ICMAS_UPLOADS}
+    assert icmas == {
+        "raw_hq_icmas_products.csv",
+        "raw_syp_icmas_products.csv",
+    }
+    assert len(DAILY_RAW_UPLOADS) == (
+        len(ARMAS_APMAS_UPLOADS)
+        + len(POMAS_PODET_UPLOADS)
+        + len(PIMAS_PIDET_UPLOADS)
+        + len(ICMAS_UPLOADS)
     )
     for spec in DAILY_RAW_UPLOADS:
         assert spec["main_table"].startswith("raw_kcw.")
