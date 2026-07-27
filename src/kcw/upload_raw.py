@@ -1,0 +1,177 @@
+"""Upload Drive raw_*.csv files into raw_kcw.* via staging replace."""
+
+from __future__ import annotations
+
+import csv
+from io import StringIO
+from pathlib import Path
+from typing import Optional
+
+import pandas as pd
+
+from src.kcw import paths
+from src.kcw.tar import supabase_db_url
+
+# HQ A extracts these full masters; upload them to Supabase after Drive write.
+ARMAS_APMAS_UPLOADS = (
+    {
+        "csv_name": "raw_hq_armas_receivable.csv",
+        "main_table": "raw_kcw.raw_hq_armas_receivable",
+        "staging_table": "raw_kcw.raw_hq_armas_receivable_stg",
+    },
+    {
+        "csv_name": "raw_hq_apmas_payable.csv",
+        "main_table": "raw_kcw.raw_hq_apmas_payable",
+        "staging_table": "raw_kcw.raw_hq_apmas_payable_stg",
+    },
+)
+
+
+def refresh_table_via_staging_df(
+    conn,
+    df: pd.DataFrame,
+    main_table: str,
+    staging_table: str,
+    source_file: str | None = None,
+) -> dict:
+    """
+    Load DataFrame into staging, validate, then replace main from staging.
+
+    Matches notebooks/90_csv_to_supabase.ipynb behavior:
+      delete staging -> COPY df -> optional _source_file stamp ->
+      delete main -> insert main select * from staging
+    """
+    if df is None or df.empty:
+        raise ValueError(f"Input DataFrame is empty for {main_table}. Main table not touched.")
+
+    load_df = df.copy()
+    cols = load_df.columns.tolist()
+    quoted_cols = ", ".join(f'"{c}"' for c in cols)
+
+    load_df = load_df.astype("object").where(pd.notna(load_df), None)
+
+    buffer = StringIO()
+    load_df.to_csv(
+        buffer,
+        index=False,
+        header=True,
+        encoding="utf-8",
+        quoting=csv.QUOTE_MINIMAL,
+    )
+    buffer.seek(0)
+
+    copy_sql = f"""
+    COPY {staging_table} ({quoted_cols})
+    FROM STDIN WITH CSV HEADER
+    """
+
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            create table if not exists {staging_table}
+            (like {main_table} including all)
+            """
+        )
+        cur.execute(f"delete from {staging_table}")
+
+        with cur.copy(copy_sql) as copy:
+            while data := buffer.read(1024 * 1024):
+                copy.write(data)
+
+        if source_file is not None:
+            schema, table = (
+                staging_table.split(".", 1)
+                if "." in staging_table
+                else ("public", staging_table)
+            )
+            cur.execute(
+                """
+                select 1
+                from information_schema.columns
+                where table_schema = %s
+                  and table_name = %s
+                  and column_name = '_source_file'
+                """,
+                (schema, table),
+            )
+            if cur.fetchone() is not None:
+                cur.execute(
+                    f"""
+                    update {staging_table}
+                    set _source_file = %s
+                    where _source_file is null
+                    """,
+                    (source_file,),
+                )
+
+        cur.execute(f"select count(*) from {staging_table}")
+        staging_count = cur.fetchone()[0]
+        if staging_count == 0:
+            raise ValueError(
+                f"Staging load produced 0 rows for {staging_table}. Main table not touched."
+            )
+
+        cur.execute(f"delete from {main_table}")
+        cur.execute(
+            f"""
+            insert into {main_table}
+            select * from {staging_table}
+            """
+        )
+        cur.execute(f"select count(*) from {main_table}")
+        main_count = cur.fetchone()[0]
+
+    conn.commit()
+    return {
+        "status": "ok",
+        "staging_rows": staging_count,
+        "main_rows": main_count,
+        "source_file": source_file,
+        "main_table": main_table,
+        "staging_table": staging_table,
+    }
+
+
+def _read_raw_csv(path: Path) -> pd.DataFrame:
+    if not path.is_file():
+        raise FileNotFoundError(f"Raw CSV not found: {path}")
+    return pd.read_csv(path, dtype="string", encoding="utf-8-sig", low_memory=False)
+
+
+def upload_armas_apmas(
+    *,
+    raw_folder: Optional[Path] = None,
+    db_url: Optional[str] = None,
+) -> list[dict]:
+    """
+    Read Drive raw_hq_armas_receivable.csv / raw_hq_apmas_payable.csv
+    and replace the matching raw_kcw tables via staging.
+    """
+    import psycopg
+
+    raw = Path(raw_folder) if raw_folder else paths.raw_dir()
+    url = db_url or supabase_db_url()
+    results: list[dict] = []
+
+    print(f"[upload-raw] raw_dir={raw}")
+    with psycopg.connect(url) as conn:
+        for spec in ARMAS_APMAS_UPLOADS:
+            csv_path = raw / spec["csv_name"]
+            print(f"[upload-raw] reading {csv_path.name} ...")
+            df = _read_raw_csv(csv_path)
+            print(f"[upload-raw] {csv_path.name} rows={len(df):,} cols={len(df.columns)}")
+            result = refresh_table_via_staging_df(
+                conn=conn,
+                df=df,
+                main_table=spec["main_table"],
+                staging_table=spec["staging_table"],
+                source_file=spec["csv_name"],
+            )
+            print(
+                f"[upload-raw] loaded {spec['csv_name']} -> {spec['main_table']} "
+                f"rows={result['main_rows']:,}"
+            )
+            results.append(result)
+
+    print(f"[upload-raw] OK armas/apmas files={len(results)}")
+    return results
