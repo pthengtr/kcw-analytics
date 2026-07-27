@@ -23,7 +23,7 @@ Local SQL Server is the only thing that must stay on the shop PCs. Everything af
 | Machine | Script | Purpose |
 |---------|--------|---------|
 | **SYP** | [`worker_tasks/run_syp_parts9_to_drive_raw.bat`](worker_tasks/run_syp_parts9_to_drive_raw.bat) | `PARTS9` → `raw_syp_*.csv` |
-| **HQ A** | [`worker_tasks/run_hq_parts9_to_drive_raw.bat`](worker_tasks/run_hq_parts9_to_drive_raw.bat) | `PARTS9` → `raw_hq_*.csv` only |
+| **HQ A** | [`worker_tasks/run_hq_parts9_to_drive_raw.bat`](worker_tasks/run_hq_parts9_to_drive_raw.bat) | `PARTS9` → `raw_hq_*.csv`, then ARMAS/APMAS → Supabase `raw_kcw` |
 | **HQ B** | [`worker_tasks/run_hq_parts9_full_pipeline.bat`](worker_tasks/run_hq_parts9_full_pipeline.bat) | HQ A + archive + curated + VAT/TAR + Excel + upload |
 
 Schedule **SYP before HQ B** (e.g. SYP 06:00, HQ 06:30) so both site raw files exist.
@@ -45,11 +45,13 @@ Run from repo root:
 python -m src.kcw.pipeline gap-check
 python -m src.kcw.pipeline extract --site hq
 python -m src.kcw.pipeline extract --site syp
+python -m src.kcw.pipeline upload-armas-apmas
 python -m src.kcw.pipeline tar --catch-up
 python -m src.kcw.pipeline tar --date 2026-07-20
 python -m src.kcw.pipeline tar --reprocess 2026-07-20
 ```
 
+`upload-armas-apmas` reads Drive `raw_hq_armas_receivable.csv` / `raw_hq_apmas_payable.csv` and replaces `raw_kcw.raw_hq_armas_receivable` / `raw_kcw.raw_hq_apmas_payable` via staging (HQ A runs this after extract).
 ### TAR catch-up (idempotent)
 
 - Starts at `max(fin_* billdate) + 1` through `min(today, max eligible raw BILLDATE)`.

@@ -46,6 +46,14 @@ def cmd_extract(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_upload_armas_apmas(_args: argparse.Namespace) -> int:
+    """HQ A follow-up: copy Drive ARMAS/APMAS raw CSVs into raw_kcw.*."""
+    from src.kcw.upload_raw import upload_armas_apmas
+
+    upload_armas_apmas()
+    return 0
+
+
 def cmd_tar(args: argparse.Namespace) -> int:
     from src.kcw.tar import delete_fin_for_day, run_bill_generation_for_day, run_catchup
     from src.kcw.tar import load_raw_csvs, prepare_eligible_frames, supabase_db_url
@@ -97,6 +105,12 @@ def build_parser() -> argparse.ArgumentParser:
     e = sub.add_parser("extract", help="PARTS9 -> Drive 01_raw")
     e.add_argument("--site", choices=("hq", "syp"), required=True)
     e.set_defaults(func=cmd_extract)
+
+    u = sub.add_parser(
+        "upload-armas-apmas",
+        help="Drive raw_hq_armas/apmas CSVs -> raw_kcw (staging replace)",
+    )
+    u.set_defaults(func=cmd_upload_armas_apmas)
 
     t = sub.add_parser("tar", help="TAR/3TAR/CNTAR catch-up or single day")
     t.add_argument("--catch-up", action="store_true", help="Process all missing days (default if no --date)")
