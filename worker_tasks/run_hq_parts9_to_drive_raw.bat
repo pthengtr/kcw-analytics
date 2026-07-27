@@ -24,7 +24,7 @@ if not exist "%KCW_ANALYTICS_LOG_DIR%" mkdir "%KCW_ANALYTICS_LOG_DIR%"
 set "LOG=%KCW_ANALYTICS_LOG_DIR%\extract_hq.log"
 
 echo ==========================================
-echo HQ PARTS9 -^> Drive raw (extract only)
+echo HQ PARTS9 -^> Drive raw + ARMAS/APMAS Supabase
 echo Python: %KCW_ANALYTICS_PYTHON%
 echo Repo: %cd%
 echo Log: %LOG%
