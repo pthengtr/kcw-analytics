@@ -16,11 +16,14 @@ from src.kcw import paths
 
 # Rolling windows + filenames match notebooks/51_parts9_to_drive.ipynb (HQ).
 # SYP original notebook used 5y for all bill tables — see SITE_YEARS.
+# date_col: POMAS/PODET key on DOCDATE; bill tables use BILLDATE.
 TABLE_SPECS = {
-    "SIDET": {"years": 5, "suffix": "sidet_sales_lines"},
-    "PIDET": {"years": 8, "suffix": "pidet_purchase_lines"},
-    "SIMAS": {"years": 5, "suffix": "simas_sales_bills"},
-    "PIMAS": {"years": 8, "suffix": "pimas_purchase_bills"},
+    "SIDET": {"years": 5, "suffix": "sidet_sales_lines", "date_col": "BILLDATE"},
+    "PIDET": {"years": 8, "suffix": "pidet_purchase_lines", "date_col": "BILLDATE"},
+    "SIMAS": {"years": 5, "suffix": "simas_sales_bills", "date_col": "BILLDATE"},
+    "PIMAS": {"years": 8, "suffix": "pimas_purchase_bills", "date_col": "BILLDATE"},
+    "PODET": {"years": 8, "suffix": "podet_purchase_order_lines", "date_col": "DOCDATE"},
+    "POMAS": {"years": 8, "suffix": "pomas_purchase_orders", "date_col": "DOCDATE"},
     "ARMAS": {"years": None, "suffix": "armas_receivable"},
     "APMAS": {"years": None, "suffix": "apmas_payable"},
     "ICMAS": {"years": None, "suffix": "icmas_products"},
@@ -28,19 +31,23 @@ TABLE_SPECS = {
     "RVMAS": {"years": None, "suffix": "rvmas_notes_vouchers"},
 }
 
-# Match attached SYP PART9S_to_drive_raw notebook (all bill tables 5y).
+# SYP rolling windows. Purchase invoices (PIMAS/PIDET) are HQ-only in daily extract.
 SITE_YEARS = {
     "syp": {
         "SIDET": 5,
-        "PIDET": 5,
         "SIMAS": 5,
+        "PODET": 5,
+        "POMAS": 5,
+        "PIDET": 5,
         "PIMAS": 5,
     },
 }
 
-# Same write order as the original SYP notebook (pidet, pimas, sidet, simas, icmas).
-SYP_MINIMAL = ("PIDET", "PIMAS", "SIDET", "SIMAS", "ICMAS")
+# Daily SYP extract: sales + products + POs. No PIMAS/PIDET (purchases happen at HQ).
+SYP_MINIMAL = ("PODET", "POMAS", "SIDET", "SIMAS", "ICMAS")
 
+# Focused PO sync (HQ/SYP worker tasks).
+PO_TABLES = ("PODET", "POMAS")
 
 def site_env_prefix(site: str) -> str:
     site = site.lower()
@@ -97,14 +104,14 @@ def mssql_engine(site: str = "hq"):
     return create_engine("mssql+pyodbc:///?odbc_connect=" + urllib.parse.quote_plus(odbc_str))
 
 
-def read_last_years(engine, table: str, years: int) -> pd.DataFrame:
+def read_last_years(engine, table: str, years: int, date_col: str = "BILLDATE") -> pd.DataFrame:
+    col = date_col if date_col.isidentifier() else "BILLDATE"
     query = f"""
     SELECT *
     FROM dbo.{table}
-    WHERE BILLDATE >= DATEADD(YEAR, -{int(years)}, (SELECT MAX(BILLDATE) FROM dbo.{table}))
+    WHERE {col} >= DATEADD(YEAR, -{int(years)}, (SELECT MAX({col}) FROM dbo.{table}))
     """
     return pd.read_sql(query, engine)
-
 
 def read_full_table(engine, table: str) -> pd.DataFrame:
     return pd.read_sql(f"SELECT * FROM dbo.{table};", engine)
@@ -244,7 +251,8 @@ def extract_tables(
             if years is None:
                 df = read_full_table(eng, table)
             else:
-                df = read_last_years(eng, table, years)
+                date_col = spec.get("date_col", "BILLDATE")
+                df = read_last_years(eng, table, years, date_col=date_col)
             write_csv_atomic(df, path)
             verify_csv_write(path, len(df))  # soft — never raises
             written[table] = path

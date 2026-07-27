@@ -42,7 +42,10 @@ def cmd_gap_check(_args: argparse.Namespace) -> int:
 def cmd_extract(args: argparse.Namespace) -> int:
     from src.kcw.extract_parts9 import extract_tables
 
-    extract_tables(args.site)
+    tables = None
+    if getattr(args, "tables", None):
+        tables = tuple(t.strip().upper() for t in args.tables.split(",") if t.strip())
+    extract_tables(args.site, tables=tables)
     return 0
 
 
@@ -51,6 +54,32 @@ def cmd_upload_armas_apmas(_args: argparse.Namespace) -> int:
     from src.kcw.upload_raw import upload_armas_apmas
 
     upload_armas_apmas()
+    return 0
+
+
+def cmd_upload_daily_raw(_args: argparse.Namespace) -> int:
+    """After SYP+HQ extracts: ARMAS/APMAS + POMAS/PODET (hq+syp) + PIMAS/PIDET (hq)."""
+    from src.kcw.upload_raw import upload_daily_raw
+
+    upload_daily_raw()
+    return 0
+
+
+def cmd_upload_pomas_podet(args: argparse.Namespace) -> int:
+    """Drive raw_{site}_pomas/podet CSVs -> raw_kcw (one site or both)."""
+    from src.kcw.upload_raw import upload_pomas_podet
+
+    upload_pomas_podet(args.site)
+    return 0
+
+
+def cmd_sync_pomas_podet(args: argparse.Namespace) -> int:
+    """Extract POMAS/PODET for a site, then upload that site to Supabase."""
+    from src.kcw.extract_parts9 import PO_TABLES, extract_tables
+    from src.kcw.upload_raw import upload_pomas_podet
+
+    extract_tables(args.site, tables=PO_TABLES)
+    upload_pomas_podet(args.site)
     return 0
 
 
@@ -104,6 +133,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     e = sub.add_parser("extract", help="PARTS9 -> Drive 01_raw")
     e.add_argument("--site", choices=("hq", "syp"), required=True)
+    e.add_argument(
+        "--tables",
+        help="Optional comma-separated PARTS9 tables (default: site full/minimal set)",
+    )
     e.set_defaults(func=cmd_extract)
 
     u = sub.add_parser(
@@ -111,6 +144,34 @@ def build_parser() -> argparse.ArgumentParser:
         help="Drive raw_hq_armas/apmas CSVs -> raw_kcw (staging replace)",
     )
     u.set_defaults(func=cmd_upload_armas_apmas)
+
+    ud = sub.add_parser(
+        "upload-daily-raw",
+        help=(
+            "Drive daily raw CSVs -> raw_kcw: armas/apmas, "
+            "pomas/podet (hq+syp), pimas/pidet (hq only)"
+        ),
+    )
+    ud.set_defaults(func=cmd_upload_daily_raw)
+
+    upo = sub.add_parser(
+        "upload-pomas-podet",
+        help="Drive raw_{site}_pomas/podet CSVs -> raw_kcw (staging replace)",
+    )
+    upo.add_argument(
+        "--site",
+        choices=("hq", "syp"),
+        default=None,
+        help="Upload one site only (default: both)",
+    )
+    upo.set_defaults(func=cmd_upload_pomas_podet)
+
+    spo = sub.add_parser(
+        "sync-pomas-podet",
+        help="Extract POMAS/PODET for a site then upload that site to raw_kcw",
+    )
+    spo.add_argument("--site", choices=("hq", "syp"), required=True)
+    spo.set_defaults(func=cmd_sync_pomas_podet)
 
     t = sub.add_parser("tar", help="TAR/3TAR/CNTAR catch-up or single day")
     t.add_argument("--catch-up", action="store_true", help="Process all missing days (default if no --date)")

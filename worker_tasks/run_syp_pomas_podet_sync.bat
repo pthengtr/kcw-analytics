@@ -1,10 +1,9 @@
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
 
-REM SYP: PARTS9 (local SQL) -> Google Drive 01_raw (raw_syp_*.csv)
-REM Uses pipeline extract (DriveFS-safe TEMP->copy->replace writes).
-REM Daily set: PODET, POMAS, SIDET, SIMAS, ICMAS (no PIMAS/PIDET — HQ only).
-REM Schedule this BEFORE the HQ raw/full pipeline so HQ can upload SYP POs.
+REM SYP: PARTS9 POMAS/PODET -> Drive 01_raw -> Supabase raw_kcw
+REM Focused PO sync (does not extract sales/ICMAS).
+REM Requires SUPABASE_DB_URL (or DB_PASSWORD + host vars) on this machine.
 
 cd /d "%~dp0.."
 
@@ -22,10 +21,10 @@ if "%KCW_ANALYTICS_PYTHON%"=="" (
 if "%KCW_ANALYTICS_LOG_DIR%"=="" set "KCW_ANALYTICS_LOG_DIR=%cd%\logs"
 if not exist "%KCW_ANALYTICS_LOG_DIR%" mkdir "%KCW_ANALYTICS_LOG_DIR%"
 
-set "LOG=%KCW_ANALYTICS_LOG_DIR%\extract_syp.log"
+set "LOG=%KCW_ANALYTICS_LOG_DIR%\sync_syp_pomas_podet.log"
 
 echo ==========================================
-echo SYP PARTS9 -^> Drive raw (pipeline extract)
+echo SYP POMAS/PODET sync -^> Drive + Supabase
 echo Python: %KCW_ANALYTICS_PYTHON%
 echo Repo: %cd%
 echo Log: %LOG%
@@ -33,13 +32,14 @@ echo ==========================================
 
 "%KCW_ANALYTICS_PYTHON%" -c "from src.kcw import paths; print('raw_dir=', paths.raw_dir())" > "%LOG%" 2>&1
 
-"%KCW_ANALYTICS_PYTHON%" -m src.kcw.pipeline extract --site syp >> "%LOG%" 2>&1
+"%KCW_ANALYTICS_PYTHON%" -m src.kcw.pipeline sync-pomas-podet --site syp >> "%LOG%" 2>&1
 if %ERRORLEVEL% NEQ 0 (
-    echo FAILED: SYP extract
+    echo FAILED: SYP POMAS/PODET sync
     echo Check log: "%LOG%"
     exit /b %ERRORLEVEL%
 )
 
-echo DONE: SYP extract
-echo Check Drive timestamps for raw_syp_pomas/podet/sidet/simas/icmas
+echo DONE: SYP POMAS/PODET sync
+echo Check Drive raw_syp_pomas_purchase_orders.csv / raw_syp_podet_purchase_order_lines.csv
+echo Check Supabase raw_kcw.raw_syp_pomas_purchase_orders / raw_syp_podet_purchase_order_lines
 exit /b 0

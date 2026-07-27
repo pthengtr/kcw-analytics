@@ -2,7 +2,10 @@
 setlocal EnableExtensions EnableDelayedExpansion
 
 REM HQ A: PARTS9 (local SQL) -> Google Drive 01_raw (raw_hq_*.csv)
-REM Then copy ARMAS/APMAS masters into Supabase raw_kcw.*
+REM Then upload daily raw tables into Supabase raw_kcw.*
+REM   - HQ ARMAS / APMAS
+REM   - HQ + SYP POMAS / PODET  (SYP CSVs must already be on Drive)
+REM   - HQ PIMAS / PIDET
 REM Use this when post-raw pipeline runs elsewhere (Claude Cowork) or for raw refresh.
 
 cd /d "%~dp0.."
@@ -24,7 +27,7 @@ if not exist "%KCW_ANALYTICS_LOG_DIR%" mkdir "%KCW_ANALYTICS_LOG_DIR%"
 set "LOG=%KCW_ANALYTICS_LOG_DIR%\extract_hq.log"
 
 echo ==========================================
-echo HQ PARTS9 -^> Drive raw + ARMAS/APMAS Supabase
+echo HQ PARTS9 -^> Drive raw + daily Supabase raw
 echo Python: %KCW_ANALYTICS_PYTHON%
 echo Repo: %cd%
 echo Log: %LOG%
@@ -42,15 +45,15 @@ if %ERRORLEVEL% NEQ 0 (
 echo DONE: HQ extract
 
 echo.
-echo --- HQ A: ARMAS/APMAS -^> Supabase ---
-"%KCW_ANALYTICS_PYTHON%" -m src.kcw.pipeline upload-armas-apmas >> "%LOG%" 2>&1
+echo --- HQ A: daily raw -^> Supabase ---
+"%KCW_ANALYTICS_PYTHON%" -m src.kcw.pipeline upload-daily-raw >> "%LOG%" 2>&1
 if %ERRORLEVEL% NEQ 0 (
-    echo FAILED: ARMAS/APMAS Supabase upload
+    echo FAILED: daily raw Supabase upload
     echo Check log: "%LOG%"
     exit /b %ERRORLEVEL%
 )
 
-echo DONE: ARMAS/APMAS Supabase upload
+echo DONE: daily raw Supabase upload
 echo Check Drive timestamps for raw_hq_sidet_sales_lines.csv and raw_hq_icmas_products.csv
-echo Check Supabase raw_kcw.raw_hq_armas_receivable / raw_hq_apmas_payable
+echo Check Supabase raw_kcw POMAS/PODET ^(hq+syp^), PIMAS/PIDET ^(hq^), ARMAS/APMAS
 exit /b 0
