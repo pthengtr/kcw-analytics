@@ -42,20 +42,43 @@ COL_MAP = {
 }
 
 
+def _looks_like_postgres_url(value: str) -> bool:
+    v = value.strip().lower()
+    return v.startswith(("postgres://", "postgresql://"))
+
+
 def supabase_db_url(password: Optional[str] = None) -> str:
     """
     Build pooler URL from env.
 
-    Preferred: SUPABASE_DB_URL (full connection string)
-    Else: DB_PASSWORD + optional SUPABASE_DB_HOST / SUPABASE_DB_USER
-    """
-    full = os.getenv("SUPABASE_DB_URL")
-    if full:
-        return full
+    Preferred: SUPABASE_DB_URL (postgresql://... connection string)
+    Else: DB_PASSWORD or SUPABASE_DB_PASSWORD + optional host/user/port/db.
 
-    pw = password or os.getenv("DB_PASSWORD")
+    Note: SUPABASE_URL (https://....supabase.co) is the REST API URL and must
+    not be used as SUPABASE_DB_URL — psycopg needs a Postgres DSN.
+    """
+    full = (os.getenv("SUPABASE_DB_URL") or "").strip()
+    if full:
+        if _looks_like_postgres_url(full):
+            return full
+        # Common misconfig: paste project https URL into SUPABASE_DB_URL.
+        print(
+            "[supabase] WARN SUPABASE_DB_URL is not a postgres:// DSN "
+            f"(got {full!r}); falling back to DB_PASSWORD / host vars"
+        )
+
+    pw = (
+        password
+        or os.getenv("DB_PASSWORD")
+        or os.getenv("SUPABASE_DB_PASSWORD")
+    )
     if not pw:
-        raise RuntimeError("Set SUPABASE_DB_URL or DB_PASSWORD in the environment.")
+        raise RuntimeError(
+            "Set SUPABASE_DB_URL to a postgresql:// connection string, "
+            "or set DB_PASSWORD / SUPABASE_DB_PASSWORD "
+            "(plus optional SUPABASE_DB_HOST / SUPABASE_DB_USER). "
+            "Do not use the https://....supabase.co API URL."
+        )
 
     user = os.getenv(
         "SUPABASE_DB_USER",

@@ -78,9 +78,47 @@ def test_expected_payload_columns():
     print("Expected ARMAS/APMAS payload columns OK")
 
 
+def test_supabase_db_url_rejects_https_api_url(monkeypatch_env=None):
+    import os
+
+    from src.kcw.tar import supabase_db_url
+
+    old = {
+        k: os.environ.get(k)
+        for k in (
+            "SUPABASE_DB_URL",
+            "DB_PASSWORD",
+            "SUPABASE_DB_PASSWORD",
+            "SUPABASE_DB_HOST",
+            "SUPABASE_DB_USER",
+            "SUPABASE_DB_PORT",
+            "SUPABASE_DB_NAME",
+        )
+    }
+    try:
+        os.environ["SUPABASE_DB_URL"] = "https://example.supabase.co"
+        os.environ["DB_PASSWORD"] = "secret-pass"
+        os.environ["SUPABASE_DB_HOST"] = "aws-0-ap-southeast-1.pooler.supabase.com"
+        os.environ["SUPABASE_DB_USER"] = "postgres.jdzitzsucntqbjvwiwxm"
+        os.environ["SUPABASE_DB_PORT"] = "5432"
+        os.environ["SUPABASE_DB_NAME"] = "postgres"
+        url = supabase_db_url()
+        assert url.startswith("postgresql://"), url
+        assert "secret-pass" in url
+        assert "https://" not in url
+    finally:
+        for k, v in old.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+    print("HTTPS API URL fallback OK")
+
+
 if __name__ == "__main__":
     test_cli_has_upload_command()
     test_upload_specs()
     test_refresh_rejects_empty_df()
     test_expected_payload_columns()
+    test_supabase_db_url_rejects_https_api_url()
     print("\nAll ARMAS/APMAS upload checks passed.")
