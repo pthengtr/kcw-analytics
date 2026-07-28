@@ -84,9 +84,22 @@ ICMAS_UPLOADS = (
     },
 )
 
+# Receipt / notes vouchers: HQ only (includes RC* receipt vouchers).
+RVMAS_UPLOADS = (
+    {
+        "csv_name": "raw_hq_rvmas_notes_vouchers.csv",
+        "main_table": "raw_kcw.raw_hq_rvmas_notes_vouchers",
+        "staging_table": "raw_kcw.raw_hq_rvmas_notes_vouchers_stg",
+    },
+)
+
 # Daily HQ A upload set (run after SYP + HQ extracts land on Drive).
 DAILY_RAW_UPLOADS = (
-    ARMAS_APMAS_UPLOADS + POMAS_PODET_UPLOADS + PIMAS_PIDET_UPLOADS + ICMAS_UPLOADS
+    ARMAS_APMAS_UPLOADS
+    + POMAS_PODET_UPLOADS
+    + PIMAS_PIDET_UPLOADS
+    + ICMAS_UPLOADS
+    + RVMAS_UPLOADS
 )
 
 
@@ -297,6 +310,7 @@ def upload_daily_raw(
       - HQ + SYP POMAS / PODET
       - HQ PIMAS / PIDET (purchase invoices; HQ only)
       - HQ + SYP ICMAS (product masters)
+      - HQ RVMAS (receipt / notes vouchers; includes RC*)
     """
     return upload_raw_specs(
         DAILY_RAW_UPLOADS,
