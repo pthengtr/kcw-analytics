@@ -71,6 +71,7 @@ python -m src.kcw.pipeline tar --reprocess 2026-07-20
 | `raw_{hq,syp}_podet_purchase_order_lines.csv` | matching site tables | PO lines |
 | `raw_hq_pimas_purchase_bills.csv` / `raw_hq_pidet_purchase_lines.csv` | HQ only | purchase invoices |
 | `raw_{hq,syp}_icmas_products.csv` | matching site tables | product masters |
+| `raw_hq_rvmas_notes_vouchers.csv` | `raw_hq_rvmas_notes_vouchers` | receipt vouchers (RC*) |
 
 `upload-armas-apmas` remains available as a narrower alias (ARMAS/APMAS only).
 ### TAR catch-up (idempotent)
