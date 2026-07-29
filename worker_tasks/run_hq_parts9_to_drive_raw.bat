@@ -8,6 +8,7 @@ REM   - HQ + SYP POMAS / PODET  (SYP CSVs must already be on Drive)
 REM   - HQ PIMAS / PIDET
 REM   - HQ + SYP ICMAS          (SYP CSV must already be on Drive)
 REM   - HQ RVMAS                (receipt / notes vouchers, incl. RC*)
+REM   - HQ PVMAS                (payment / notes vouchers, incl. P* / KCPN*)
 REM Use this when post-raw pipeline runs elsewhere (Claude Cowork) or for raw refresh.
 
 cd /d "%~dp0.."
@@ -57,5 +58,5 @@ if %ERRORLEVEL% NEQ 0 (
 
 echo DONE: daily raw Supabase upload
 echo Check Drive timestamps for raw_hq_sidet_sales_lines.csv and raw_hq_icmas_products.csv
-echo Check Supabase raw_kcw POMAS/PODET ^(hq+syp^), PIMAS/PIDET ^(hq^), ICMAS ^(hq+syp^), RVMAS ^(hq^), ARMAS/APMAS
+echo Check Supabase raw_kcw POMAS/PODET ^(hq+syp^), PIMAS/PIDET ^(hq^), ICMAS ^(hq+syp^), RVMAS/PVMAS ^(hq^), ARMAS/APMAS
 exit /b 0
