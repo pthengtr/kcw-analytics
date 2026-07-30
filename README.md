@@ -27,7 +27,8 @@ Local SQL Server is the only thing that must stay on the shop PCs. Everything af
 | **HQ A** | [`worker_tasks/run_hq_parts9_to_drive_raw.bat`](worker_tasks/run_hq_parts9_to_drive_raw.bat) | `PARTS9` → `raw_hq_*.csv`, then daily raw → Supabase `raw_kcw` |
 | **HQ** | [`worker_tasks/run_hq_pomas_podet_sync.bat`](worker_tasks/run_hq_pomas_podet_sync.bat) | POMAS/PODET only → Drive + Supabase `raw_hq_*` |
 | **HQ B** | [`worker_tasks/run_hq_parts9_full_pipeline.bat`](worker_tasks/run_hq_parts9_full_pipeline.bat) | HQ A + archive + curated + VAT/TAR + Excel + upload |
-| **HQ** | [`worker_tasks/run_bank_statement_import.bat`](worker_tasks/run_bank_statement_import.bat) | Drive `01_raw/statement` (KBANK+KTB) → Supabase `bank.statement_*` |
+| **HQ** | [`worker_tasks/run_bank_statement_import.bat`](worker_tasks/run_bank_statement_import.bat) | Drive `01_raw/statement` (KBANK+KTB) → Supabase `bank.statement_*`, then monthly Excel report |
+| **HQ** | [`worker_tasks/run_bank_statement_report.bat`](worker_tasks/run_bank_statement_report.bat) | Monthly bank statement Excel → `04_outputs/04_Bank_Statement_Report/` (also called after import; same CLI for webapp/chatbot enqueue) |
 
 Schedule **SYP before HQ A/B** (e.g. SYP 06:00, HQ 06:30) so both site raw files exist (HQ uploads SYP POs from Drive).
 
@@ -58,7 +59,12 @@ python -m src.kcw.pipeline upload-armas-apmas
 python -m src.kcw.pipeline tar --catch-up
 python -m src.kcw.pipeline tar --date 2026-07-20
 python -m src.kcw.pipeline tar --reprocess 2026-07-20
+python -m src.kcw.pipeline bank-statement-report
+python -m src.kcw.pipeline bank-statement-report --year 2026 --month 6
+python -m src.kcw.pipeline bank-statement-report --fixture-sample
 ```
+
+`bank-statement-report` writes one workbook per month (`bank_statement_report_{YYYY}_{MM}.xlsx`) with a tab per account under `04_outputs/04_Bank_Statement_Report/`. Default month is Asia/Bangkok today − 10 days (same as VAT Excel). Overwrites on each run. This is the single worker entry for Task Scheduler, webapp, or chatbot enqueue (`run_bank_statement_report.bat` or the CLI above).
 
 `sync-pomas-podet --site {hq|syp}` extracts only POMAS/PODET to Drive, then uploads that site's CSVs to `raw_kcw` (used by the focused HQ/SYP PO worker BATs).
 
@@ -86,10 +92,10 @@ python -m src.kcw.pipeline tar --reprocess 2026-07-20
 | Band | Role |
 |------|------|
 | `00_` / `_archive/` / `_playground` | Scratch — do not schedule |
+| `02_` | Bank statement import ([`02_bank_statement_import_test.ipynb`](notebooks/02_bank_statement_import_test.ipynb)) |
 | `20–21_` | Tax / TAR ops |
 | `30–34_` | Monthly accounting |
 | `50–51_` | Extract / curated (`51_syp_*` thin wrapper; HQ `51_parts9_to_drive`) |
-| `60_` | Statement jobs (`61`; clones moved to `_archive`) |
 | `70_` | Online channels |
 | `90_` | Loaders |
 
