@@ -75,14 +75,19 @@ HQ PARTS9 on KSS is reachable via `mssql_engine("hq")` using `.env` `KSS_*` (or 
 
 ## Pipeline / worker sync
 
-Extract full `ICLOW` to Drive and replace Supabase `raw_kcw.raw_hq_iclow_stock_orders`:
+Extract full `ICLOW` to Drive and replace Supabase `raw_kcw.raw_{hq|syp}_iclow_stock_orders`:
 
 ```bash
-python -m src.kcw.pipeline sync-iclow
+python -m src.kcw.pipeline sync-iclow --site hq
+python -m src.kcw.pipeline sync-iclow --site syp
 ```
 
-Worker BAT: [`worker_tasks/run_hq_iclow_sync.bat`](../worker_tasks/run_hq_iclow_sync.bat)
+Worker BATs:
+- HQ: [`worker_tasks/run_hq_iclow_sync.bat`](../worker_tasks/run_hq_iclow_sync.bat)
+- SYP: [`worker_tasks/run_syp_iclow_sync.bat`](../worker_tasks/run_syp_iclow_sync.bat)
 
-Also included in daily HQ extract (`TABLE_SPECS`) and `upload-daily-raw`.
+Also included in daily HQ/SYP extracts and `upload-daily-raw` (HQ A uploads both sites from Drive).
 
-Apply migration first: [`supabase/migrations/20260801083000_create_raw_hq_iclow.sql`](../supabase/migrations/20260801083000_create_raw_hq_iclow.sql).
+Apply migrations first:
+- [`supabase/migrations/20260801083000_create_raw_hq_iclow.sql`](../supabase/migrations/20260801083000_create_raw_hq_iclow.sql)
+- [`supabase/migrations/20260801084500_create_raw_syp_iclow.sql`](../supabase/migrations/20260801084500_create_raw_syp_iclow.sql)

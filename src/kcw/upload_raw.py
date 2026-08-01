@@ -102,13 +102,19 @@ PVMAS_UPLOADS = (
     },
 )
 
-# Stock-order / pending-receive tracker: HQ only (ICLOW; ค้างรับ = ORDERED=Y RECEIVED=N).
+# Stock-order / pending-receive tracker: HQ + SYP (ICLOW; ค้างรับ = ORDERED=Y RECEIVED=N).
 ICLOW_UPLOADS = (
     {
         "csv_name": "raw_hq_iclow_stock_orders.csv",
         "main_table": "raw_kcw.raw_hq_iclow_stock_orders",
         "staging_table": "raw_kcw.raw_hq_iclow_stock_orders_stg",
         "site": "hq",
+    },
+    {
+        "csv_name": "raw_syp_iclow_stock_orders.csv",
+        "main_table": "raw_kcw.raw_syp_iclow_stock_orders",
+        "staging_table": "raw_kcw.raw_syp_iclow_stock_orders_stg",
+        "site": "syp",
     },
 )
 
@@ -320,20 +326,33 @@ def upload_pomas_podet(
 
 
 def upload_iclow(
+    site: str | None = None,
     *,
     raw_folder: Optional[Path] = None,
     db_url: Optional[str] = None,
 ) -> list[dict]:
     """
-    Upload HQ ICLOW Drive CSV to raw_kcw.
+    Upload ICLOW Drive CSVs to raw_kcw.
+
+    site=None -> both HQ and SYP
+    site='hq'|'syp' -> that site only
 
     Pending receive (ค้างรับ): ORDERED='Y' AND RECEIVED='N' AND CANCELED='N'.
     """
+    if site is None:
+        specs = ICLOW_UPLOADS
+        label = "iclow"
+    else:
+        site = site.lower()
+        if site not in ("hq", "syp"):
+            raise ValueError("site must be 'hq', 'syp', or None")
+        specs = tuple(s for s in ICLOW_UPLOADS if s["site"] == site)
+        label = f"iclow-{site}"
     return upload_raw_specs(
-        ICLOW_UPLOADS,
+        specs,
         raw_folder=raw_folder,
         db_url=db_url,
-        label="iclow",
+        label=label,
     )
 
 
@@ -351,7 +370,7 @@ def upload_daily_raw(
       - HQ + SYP ICMAS (product masters)
       - HQ RVMAS (receipt / notes vouchers; includes RC*)
       - HQ PVMAS (payment / notes vouchers; includes P* / KCPN*)
-      - HQ ICLOW (stock-order / pending-receive tracker)
+      - HQ + SYP ICLOW (stock-order / pending-receive tracker)
     """
     return upload_raw_specs(
         DAILY_RAW_UPLOADS,

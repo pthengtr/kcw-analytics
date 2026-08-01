@@ -24,6 +24,7 @@ Local SQL Server is the only thing that must stay on the shop PCs. Everything af
 |---------|--------|---------|
 | **SYP** | [`worker_tasks/run_syp_parts9_to_drive_raw.bat`](worker_tasks/run_syp_parts9_to_drive_raw.bat) | `PARTS9` → `raw_syp_*.csv` (POMAS/PODET + sales + ICMAS) |
 | **SYP** | [`worker_tasks/run_syp_pomas_podet_sync.bat`](worker_tasks/run_syp_pomas_podet_sync.bat) | POMAS/PODET only → Drive + Supabase `raw_syp_*` |
+| **SYP** | [`worker_tasks/run_syp_iclow_sync.bat`](worker_tasks/run_syp_iclow_sync.bat) | ICLOW only → Drive + Supabase `raw_syp_iclow_stock_orders` |
 | **HQ A** | [`worker_tasks/run_hq_parts9_to_drive_raw.bat`](worker_tasks/run_hq_parts9_to_drive_raw.bat) | `PARTS9` → `raw_hq_*.csv`, then daily raw → Supabase `raw_kcw` |
 | **HQ** | [`worker_tasks/run_hq_pomas_podet_sync.bat`](worker_tasks/run_hq_pomas_podet_sync.bat) | POMAS/PODET only → Drive + Supabase `raw_hq_*` |
 | **HQ** | [`worker_tasks/run_hq_iclow_sync.bat`](worker_tasks/run_hq_iclow_sync.bat) | ICLOW only → Drive + Supabase `raw_hq_iclow_stock_orders` |
@@ -39,8 +40,8 @@ Required: `KCW_ANALYTICS_PYTHON`. Recommended: `KCW_DRIVE_ROOT` or `KCW_ANALYTIC
 **SYP Task Scheduler** runs `python -m src.kcw.pipeline extract --site syp` (DriveFS-safe TEMP → copy → `os.replace`). Manual notebook: [`51_syp_parts9_to_drive_raw.ipynb`](notebooks/51_syp_parts9_to_drive_raw.ipynb).
 
 Daily extract sets:
-- **HQ**: full `TABLE_SPECS` including POMAS/PODET + PIMAS/PIDET
-- **SYP**: POMAS/PODET + SIDET/SIMAS/ICMAS (no PIMAS/PIDET — purchases are HQ-only)
+- **HQ**: full `TABLE_SPECS` including POMAS/PODET + PIMAS/PIDET + ICLOW
+- **SYP**: POMAS/PODET + SIDET/SIMAS/ICMAS/ICLOW (no PIMAS/PIDET — purchases are HQ-only)
 
 ## CLI (BAT and Claude Cowork)
 
@@ -53,7 +54,9 @@ python -m src.kcw.pipeline extract --site syp
 python -m src.kcw.pipeline extract --site hq --tables POMAS,PODET
 python -m src.kcw.pipeline sync-pomas-podet --site hq
 python -m src.kcw.pipeline sync-pomas-podet --site syp
-python -m src.kcw.pipeline sync-iclow
+python -m src.kcw.pipeline sync-iclow --site hq
+python -m src.kcw.pipeline sync-iclow --site syp
+python -m src.kcw.pipeline upload-iclow --site hq
 python -m src.kcw.pipeline upload-iclow
 python -m src.kcw.pipeline upload-pomas-podet --site hq
 python -m src.kcw.pipeline upload-daily-raw
@@ -65,7 +68,7 @@ python -m src.kcw.pipeline tar --reprocess 2026-07-20
 
 `sync-pomas-podet --site {hq|syp}` extracts only POMAS/PODET to Drive, then uploads that site's CSVs to `raw_kcw` (used by the focused HQ/SYP PO worker BATs).
 
-`sync-iclow` extracts HQ `ICLOW` (stock-order / ค้างรับ tracker) to Drive, then uploads to `raw_kcw.raw_hq_iclow_stock_orders`. See [`docs/parts9_pending_receive.md`](docs/parts9_pending_receive.md).
+`sync-iclow --site {hq|syp}` extracts that site's `ICLOW` (stock-order / ค้างรับ tracker) to Drive, then uploads to `raw_kcw.raw_{site}_iclow_stock_orders`. See [`docs/parts9_pending_receive.md`](docs/parts9_pending_receive.md).
 
 `upload-daily-raw` (HQ A after extract) replaces these `raw_kcw` tables via staging from Drive CSVs:
 
@@ -78,7 +81,7 @@ python -m src.kcw.pipeline tar --reprocess 2026-07-20
 | `raw_{hq,syp}_icmas_products.csv` | matching site tables | product masters |
 | `raw_hq_rvmas_notes_vouchers.csv` | `raw_hq_rvmas_notes_vouchers` | receipt vouchers (RC*) |
 | `raw_hq_pvmas_notes_vouchers.csv` | `raw_hq_pvmas_notes_vouchers` | payment vouchers (P* / KCPN*) |
-| `raw_hq_iclow_stock_orders.csv` | `raw_hq_iclow_stock_orders` | stock orders / pending receive |
+| `raw_{hq,syp}_iclow_stock_orders.csv` | matching site tables | stock orders / pending receive |
 
 `upload-armas-apmas` remains available as a narrower alias (ARMAS/APMAS only).
 ### TAR catch-up (idempotent)

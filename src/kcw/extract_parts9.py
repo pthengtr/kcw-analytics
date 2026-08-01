@@ -44,13 +44,13 @@ SITE_YEARS = {
     },
 }
 
-# Daily SYP extract: sales + products + POs. No PIMAS/PIDET (purchases happen at HQ).
-SYP_MINIMAL = ("PODET", "POMAS", "SIDET", "SIMAS", "ICMAS")
+# Daily SYP extract: sales + products + POs + ICLOW. No PIMAS/PIDET (purchases happen at HQ).
+SYP_MINIMAL = ("PODET", "POMAS", "SIDET", "SIMAS", "ICMAS", "ICLOW")
 
 # Focused PO sync (HQ/SYP worker tasks).
 PO_TABLES = ("PODET", "POMAS")
 
-# Focused ICLOW sync (HQ pending-receive / stock-order tracker).
+# Focused ICLOW sync (HQ/SYP pending-receive / stock-order tracker).
 ICLOW_TABLES = ("ICLOW",)
 
 def site_env_prefix(site: str) -> str:

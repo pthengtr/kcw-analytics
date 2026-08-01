@@ -34,10 +34,15 @@ def test_cli_has_upload_commands():
     assert args.func.__name__ == "cmd_upload_pomas_podet"
     args = parser.parse_args(["sync-pomas-podet", "--site", "syp"])
     assert args.func.__name__ == "cmd_sync_pomas_podet"
-    args = parser.parse_args(["sync-iclow"])
+    args = parser.parse_args(["sync-iclow", "--site", "hq"])
     assert args.func.__name__ == "cmd_sync_iclow"
+    args = parser.parse_args(["sync-iclow", "--site", "syp"])
+    assert args.func.__name__ == "cmd_sync_iclow"
+    args = parser.parse_args(["upload-iclow", "--site", "hq"])
+    assert args.func.__name__ == "cmd_upload_iclow"
     args = parser.parse_args(["upload-iclow"])
     assert args.func.__name__ == "cmd_upload_iclow"
+    assert args.site is None
     args = parser.parse_args(["extract", "--site", "hq", "--tables", "POMAS,PODET"])
     assert args.tables == "POMAS,PODET"
     print("CLI upload/sync PO/ICLOW commands registered")
@@ -71,7 +76,10 @@ def test_upload_specs():
     pvmas = {s["csv_name"] for s in PVMAS_UPLOADS}
     assert pvmas == {"raw_hq_pvmas_notes_vouchers.csv"}
     iclow = {s["csv_name"] for s in ICLOW_UPLOADS}
-    assert iclow == {"raw_hq_iclow_stock_orders.csv"}
+    assert iclow == {
+        "raw_hq_iclow_stock_orders.csv",
+        "raw_syp_iclow_stock_orders.csv",
+    }
     assert len(DAILY_RAW_UPLOADS) == (
         len(ARMAS_APMAS_UPLOADS)
         + len(POMAS_PODET_UPLOADS)
@@ -118,7 +126,7 @@ def test_extract_includes_pomas_podet():
     assert TABLE_SPECS["ICLOW"]["years"] is None
     assert TABLE_SPECS["ICLOW"]["suffix"] == "iclow_stock_orders"
     assert ICLOW_TABLES == ("ICLOW",)
-    assert "ICLOW" not in SYP_MINIMAL
+    assert "ICLOW" in SYP_MINIMAL
     print("Extract TABLE_SPECS / SYP_MINIMAL / PO_TABLES / ICLOW_TABLES OK")
 
 
