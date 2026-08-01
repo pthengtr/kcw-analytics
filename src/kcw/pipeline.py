@@ -83,6 +83,24 @@ def cmd_sync_pomas_podet(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_upload_iclow(args: argparse.Namespace) -> int:
+    """Drive raw_{site}_iclow_stock_orders.csv -> raw_kcw (one site or both)."""
+    from src.kcw.upload_raw import upload_iclow
+
+    upload_iclow(args.site)
+    return 0
+
+
+def cmd_sync_iclow(args: argparse.Namespace) -> int:
+    """Extract ICLOW for a site, then upload that site to Supabase."""
+    from src.kcw.extract_parts9 import ICLOW_TABLES, extract_tables
+    from src.kcw.upload_raw import upload_iclow
+
+    extract_tables(args.site, tables=ICLOW_TABLES)
+    upload_iclow(args.site)
+    return 0
+
+
 def cmd_tar(args: argparse.Namespace) -> int:
     from src.kcw.tar import delete_fin_for_day, run_bill_generation_for_day, run_catchup
     from src.kcw.tar import load_raw_csvs, prepare_eligible_frames, supabase_db_url
@@ -150,7 +168,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Drive daily raw CSVs -> raw_kcw: armas/apmas, "
             "pomas/podet (hq+syp), pimas/pidet (hq), icmas (hq+syp), "
-            "rvmas/pvmas (hq)"
+            "rvmas/pvmas (hq), iclow (hq+syp)"
         ),
     )
     ud.set_defaults(func=cmd_upload_daily_raw)
@@ -173,6 +191,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     spo.add_argument("--site", choices=("hq", "syp"), required=True)
     spo.set_defaults(func=cmd_sync_pomas_podet)
+
+    ui = sub.add_parser(
+        "upload-iclow",
+        help="Drive raw_{site}_iclow_stock_orders.csv -> raw_kcw (staging replace)",
+    )
+    ui.add_argument(
+        "--site",
+        choices=("hq", "syp"),
+        default=None,
+        help="Upload one site only (default: both)",
+    )
+    ui.set_defaults(func=cmd_upload_iclow)
+
+    si = sub.add_parser(
+        "sync-iclow",
+        help="Extract ICLOW for a site then upload that site to raw_kcw (pending-receive tracker)",
+    )
+    si.add_argument("--site", choices=("hq", "syp"), required=True)
+    si.set_defaults(func=cmd_sync_iclow)
 
     t = sub.add_parser("tar", help="TAR/3TAR/CNTAR catch-up or single day")
     t.add_argument("--catch-up", action="store_true", help="Process all missing days (default if no --date)")

@@ -14,6 +14,7 @@ from src.kcw.pipeline import build_parser  # noqa: E402
 from src.kcw.upload_raw import (  # noqa: E402
     ARMAS_APMAS_UPLOADS,
     DAILY_RAW_UPLOADS,
+    ICLOW_UPLOADS,
     ICMAS_UPLOADS,
     PIMAS_PIDET_UPLOADS,
     POMAS_PODET_UPLOADS,
@@ -33,9 +34,18 @@ def test_cli_has_upload_commands():
     assert args.func.__name__ == "cmd_upload_pomas_podet"
     args = parser.parse_args(["sync-pomas-podet", "--site", "syp"])
     assert args.func.__name__ == "cmd_sync_pomas_podet"
+    args = parser.parse_args(["sync-iclow", "--site", "hq"])
+    assert args.func.__name__ == "cmd_sync_iclow"
+    args = parser.parse_args(["sync-iclow", "--site", "syp"])
+    assert args.func.__name__ == "cmd_sync_iclow"
+    args = parser.parse_args(["upload-iclow", "--site", "hq"])
+    assert args.func.__name__ == "cmd_upload_iclow"
+    args = parser.parse_args(["upload-iclow"])
+    assert args.func.__name__ == "cmd_upload_iclow"
+    assert args.site is None
     args = parser.parse_args(["extract", "--site", "hq", "--tables", "POMAS,PODET"])
     assert args.tables == "POMAS,PODET"
-    print("CLI upload/sync PO commands registered")
+    print("CLI upload/sync PO/ICLOW commands registered")
 
 
 def test_upload_specs():
@@ -65,6 +75,11 @@ def test_upload_specs():
     assert rvmas == {"raw_hq_rvmas_notes_vouchers.csv"}
     pvmas = {s["csv_name"] for s in PVMAS_UPLOADS}
     assert pvmas == {"raw_hq_pvmas_notes_vouchers.csv"}
+    iclow = {s["csv_name"] for s in ICLOW_UPLOADS}
+    assert iclow == {
+        "raw_hq_iclow_stock_orders.csv",
+        "raw_syp_iclow_stock_orders.csv",
+    }
     assert len(DAILY_RAW_UPLOADS) == (
         len(ARMAS_APMAS_UPLOADS)
         + len(POMAS_PODET_UPLOADS)
@@ -72,6 +87,7 @@ def test_upload_specs():
         + len(ICMAS_UPLOADS)
         + len(RVMAS_UPLOADS)
         + len(PVMAS_UPLOADS)
+        + len(ICLOW_UPLOADS)
     )
     for spec in DAILY_RAW_UPLOADS:
         assert spec["main_table"].startswith("raw_kcw.")
@@ -98,7 +114,7 @@ def test_refresh_rejects_empty_df():
 
 
 def test_extract_includes_pomas_podet():
-    from src.kcw.extract_parts9 import PO_TABLES, SYP_MINIMAL, TABLE_SPECS
+    from src.kcw.extract_parts9 import ICLOW_TABLES, PO_TABLES, SYP_MINIMAL, TABLE_SPECS
 
     assert "POMAS" in TABLE_SPECS and "PODET" in TABLE_SPECS
     assert TABLE_SPECS["POMAS"]["date_col"] == "DOCDATE"
@@ -106,7 +122,12 @@ def test_extract_includes_pomas_podet():
     assert "POMAS" in SYP_MINIMAL and "PODET" in SYP_MINIMAL
     assert "PIMAS" not in SYP_MINIMAL and "PIDET" not in SYP_MINIMAL
     assert PO_TABLES == ("PODET", "POMAS")
-    print("Extract TABLE_SPECS / SYP_MINIMAL / PO_TABLES OK")
+    assert "ICLOW" in TABLE_SPECS
+    assert TABLE_SPECS["ICLOW"]["years"] is None
+    assert TABLE_SPECS["ICLOW"]["suffix"] == "iclow_stock_orders"
+    assert ICLOW_TABLES == ("ICLOW",)
+    assert "ICLOW" in SYP_MINIMAL
+    print("Extract TABLE_SPECS / SYP_MINIMAL / PO_TABLES / ICLOW_TABLES OK")
 
 
 def test_supabase_db_url_rejects_https_api_url(monkeypatch_env=None):

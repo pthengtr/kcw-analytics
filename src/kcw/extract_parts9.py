@@ -27,6 +27,7 @@ TABLE_SPECS = {
     "ARMAS": {"years": None, "suffix": "armas_receivable"},
     "APMAS": {"years": None, "suffix": "apmas_payable"},
     "ICMAS": {"years": None, "suffix": "icmas_products"},
+    "ICLOW": {"years": None, "suffix": "iclow_stock_orders"},
     "PVMAS": {"years": None, "suffix": "pvmas_notes_vouchers"},
     "RVMAS": {"years": None, "suffix": "rvmas_notes_vouchers"},
 }
@@ -43,11 +44,14 @@ SITE_YEARS = {
     },
 }
 
-# Daily SYP extract: sales + products + POs. No PIMAS/PIDET (purchases happen at HQ).
-SYP_MINIMAL = ("PODET", "POMAS", "SIDET", "SIMAS", "ICMAS")
+# Daily SYP extract: sales + products + POs + ICLOW. No PIMAS/PIDET (purchases happen at HQ).
+SYP_MINIMAL = ("PODET", "POMAS", "SIDET", "SIMAS", "ICMAS", "ICLOW")
 
 # Focused PO sync (HQ/SYP worker tasks).
 PO_TABLES = ("PODET", "POMAS")
+
+# Focused ICLOW sync (HQ/SYP pending-receive / stock-order tracker).
+ICLOW_TABLES = ("ICLOW",)
 
 def site_env_prefix(site: str) -> str:
     site = site.lower()
