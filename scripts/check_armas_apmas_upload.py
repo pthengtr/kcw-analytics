@@ -18,6 +18,7 @@ from src.kcw.upload_raw import (  # noqa: E402
     ICMAS_UPLOADS,
     PIMAS_PIDET_UPLOADS,
     POMAS_PODET_UPLOADS,
+    PVMAS_UPLOADS,
     RVMAS_UPLOADS,
     refresh_table_via_staging_df,
 )
@@ -67,6 +68,8 @@ def test_upload_specs():
     }
     rvmas = {s["csv_name"] for s in RVMAS_UPLOADS}
     assert rvmas == {"raw_hq_rvmas_notes_vouchers.csv"}
+    pvmas = {s["csv_name"] for s in PVMAS_UPLOADS}
+    assert pvmas == {"raw_hq_pvmas_notes_vouchers.csv"}
     iclow = {s["csv_name"] for s in ICLOW_UPLOADS}
     assert iclow == {"raw_hq_iclow_stock_orders.csv"}
     assert len(DAILY_RAW_UPLOADS) == (
@@ -75,6 +78,7 @@ def test_upload_specs():
         + len(PIMAS_PIDET_UPLOADS)
         + len(ICMAS_UPLOADS)
         + len(RVMAS_UPLOADS)
+        + len(PVMAS_UPLOADS)
         + len(ICLOW_UPLOADS)
     )
     for spec in DAILY_RAW_UPLOADS:

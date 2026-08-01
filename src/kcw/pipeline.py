@@ -58,7 +58,7 @@ def cmd_upload_armas_apmas(_args: argparse.Namespace) -> int:
 
 
 def cmd_upload_daily_raw(_args: argparse.Namespace) -> int:
-    """After SYP+HQ extracts: ARMAS/APMAS + POs + PIMAS/PIDET + ICMAS + RVMAS."""
+    """After SYP+HQ extracts: masters + POs + invoices + ICMAS + RVMAS + PVMAS."""
     from src.kcw.upload_raw import upload_daily_raw
 
     upload_daily_raw()
@@ -168,7 +168,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Drive daily raw CSVs -> raw_kcw: armas/apmas, "
             "pomas/podet (hq+syp), pimas/pidet (hq), icmas (hq+syp), "
-            "rvmas (hq), iclow (hq)"
+            "rvmas/pvmas (hq), iclow (hq)"
         ),
     )
     ud.set_defaults(func=cmd_upload_daily_raw)

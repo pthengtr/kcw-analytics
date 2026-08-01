@@ -93,6 +93,15 @@ RVMAS_UPLOADS = (
     },
 )
 
+# Payment / notes vouchers: HQ only (includes P* and KCPN* payment vouchers).
+PVMAS_UPLOADS = (
+    {
+        "csv_name": "raw_hq_pvmas_notes_vouchers.csv",
+        "main_table": "raw_kcw.raw_hq_pvmas_notes_vouchers",
+        "staging_table": "raw_kcw.raw_hq_pvmas_notes_vouchers_stg",
+    },
+)
+
 # Stock-order / pending-receive tracker: HQ only (ICLOW; ค้างรับ = ORDERED=Y RECEIVED=N).
 ICLOW_UPLOADS = (
     {
@@ -110,6 +119,7 @@ DAILY_RAW_UPLOADS = (
     + PIMAS_PIDET_UPLOADS
     + ICMAS_UPLOADS
     + RVMAS_UPLOADS
+    + PVMAS_UPLOADS
     + ICLOW_UPLOADS
 )
 
@@ -340,6 +350,7 @@ def upload_daily_raw(
       - HQ PIMAS / PIDET (purchase invoices; HQ only)
       - HQ + SYP ICMAS (product masters)
       - HQ RVMAS (receipt / notes vouchers; includes RC*)
+      - HQ PVMAS (payment / notes vouchers; includes P* / KCPN*)
       - HQ ICLOW (stock-order / pending-receive tracker)
     """
     return upload_raw_specs(

@@ -77,6 +77,7 @@ python -m src.kcw.pipeline tar --reprocess 2026-07-20
 | `raw_hq_pimas_purchase_bills.csv` / `raw_hq_pidet_purchase_lines.csv` | HQ only | purchase invoices |
 | `raw_{hq,syp}_icmas_products.csv` | matching site tables | product masters |
 | `raw_hq_rvmas_notes_vouchers.csv` | `raw_hq_rvmas_notes_vouchers` | receipt vouchers (RC*) |
+| `raw_hq_pvmas_notes_vouchers.csv` | `raw_hq_pvmas_notes_vouchers` | payment vouchers (P* / KCPN*) |
 | `raw_hq_iclow_stock_orders.csv` | `raw_hq_iclow_stock_orders` | stock orders / pending receive |
 
 `upload-armas-apmas` remains available as a narrower alias (ARMAS/APMAS only).
