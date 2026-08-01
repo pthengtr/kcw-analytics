@@ -93,6 +93,16 @@ RVMAS_UPLOADS = (
     },
 )
 
+# Stock-order / pending-receive tracker: HQ only (ICLOW; ค้างรับ = ORDERED=Y RECEIVED=N).
+ICLOW_UPLOADS = (
+    {
+        "csv_name": "raw_hq_iclow_stock_orders.csv",
+        "main_table": "raw_kcw.raw_hq_iclow_stock_orders",
+        "staging_table": "raw_kcw.raw_hq_iclow_stock_orders_stg",
+        "site": "hq",
+    },
+)
+
 # Daily HQ A upload set (run after SYP + HQ extracts land on Drive).
 DAILY_RAW_UPLOADS = (
     ARMAS_APMAS_UPLOADS
@@ -100,6 +110,7 @@ DAILY_RAW_UPLOADS = (
     + PIMAS_PIDET_UPLOADS
     + ICMAS_UPLOADS
     + RVMAS_UPLOADS
+    + ICLOW_UPLOADS
 )
 
 
@@ -298,6 +309,24 @@ def upload_pomas_podet(
     )
 
 
+def upload_iclow(
+    *,
+    raw_folder: Optional[Path] = None,
+    db_url: Optional[str] = None,
+) -> list[dict]:
+    """
+    Upload HQ ICLOW Drive CSV to raw_kcw.
+
+    Pending receive (ค้างรับ): ORDERED='Y' AND RECEIVED='N' AND CANCELED='N'.
+    """
+    return upload_raw_specs(
+        ICLOW_UPLOADS,
+        raw_folder=raw_folder,
+        db_url=db_url,
+        label="iclow",
+    )
+
+
 def upload_daily_raw(
     *,
     raw_folder: Optional[Path] = None,
@@ -311,6 +340,7 @@ def upload_daily_raw(
       - HQ PIMAS / PIDET (purchase invoices; HQ only)
       - HQ + SYP ICMAS (product masters)
       - HQ RVMAS (receipt / notes vouchers; includes RC*)
+      - HQ ICLOW (stock-order / pending-receive tracker)
     """
     return upload_raw_specs(
         DAILY_RAW_UPLOADS,

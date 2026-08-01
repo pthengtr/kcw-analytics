@@ -26,6 +26,7 @@ Local SQL Server is the only thing that must stay on the shop PCs. Everything af
 | **SYP** | [`worker_tasks/run_syp_pomas_podet_sync.bat`](worker_tasks/run_syp_pomas_podet_sync.bat) | POMAS/PODET only → Drive + Supabase `raw_syp_*` |
 | **HQ A** | [`worker_tasks/run_hq_parts9_to_drive_raw.bat`](worker_tasks/run_hq_parts9_to_drive_raw.bat) | `PARTS9` → `raw_hq_*.csv`, then daily raw → Supabase `raw_kcw` |
 | **HQ** | [`worker_tasks/run_hq_pomas_podet_sync.bat`](worker_tasks/run_hq_pomas_podet_sync.bat) | POMAS/PODET only → Drive + Supabase `raw_hq_*` |
+| **HQ** | [`worker_tasks/run_hq_iclow_sync.bat`](worker_tasks/run_hq_iclow_sync.bat) | ICLOW only → Drive + Supabase `raw_hq_iclow_stock_orders` |
 | **HQ B** | [`worker_tasks/run_hq_parts9_full_pipeline.bat`](worker_tasks/run_hq_parts9_full_pipeline.bat) | HQ A + archive + curated + VAT/TAR + Excel + upload |
 | **HQ** | [`worker_tasks/run_bank_statement_import.bat`](worker_tasks/run_bank_statement_import.bat) | Drive `01_raw/statement` (KBANK+KTB) → Supabase `bank.statement_*` |
 
@@ -52,6 +53,8 @@ python -m src.kcw.pipeline extract --site syp
 python -m src.kcw.pipeline extract --site hq --tables POMAS,PODET
 python -m src.kcw.pipeline sync-pomas-podet --site hq
 python -m src.kcw.pipeline sync-pomas-podet --site syp
+python -m src.kcw.pipeline sync-iclow
+python -m src.kcw.pipeline upload-iclow
 python -m src.kcw.pipeline upload-pomas-podet --site hq
 python -m src.kcw.pipeline upload-daily-raw
 python -m src.kcw.pipeline upload-armas-apmas
@@ -61,6 +64,8 @@ python -m src.kcw.pipeline tar --reprocess 2026-07-20
 ```
 
 `sync-pomas-podet --site {hq|syp}` extracts only POMAS/PODET to Drive, then uploads that site's CSVs to `raw_kcw` (used by the focused HQ/SYP PO worker BATs).
+
+`sync-iclow` extracts HQ `ICLOW` (stock-order / ค้างรับ tracker) to Drive, then uploads to `raw_kcw.raw_hq_iclow_stock_orders`. See [`docs/parts9_pending_receive.md`](docs/parts9_pending_receive.md).
 
 `upload-daily-raw` (HQ A after extract) replaces these `raw_kcw` tables via staging from Drive CSVs:
 
@@ -72,6 +77,7 @@ python -m src.kcw.pipeline tar --reprocess 2026-07-20
 | `raw_hq_pimas_purchase_bills.csv` / `raw_hq_pidet_purchase_lines.csv` | HQ only | purchase invoices |
 | `raw_{hq,syp}_icmas_products.csv` | matching site tables | product masters |
 | `raw_hq_rvmas_notes_vouchers.csv` | `raw_hq_rvmas_notes_vouchers` | receipt vouchers (RC*) |
+| `raw_hq_iclow_stock_orders.csv` | `raw_hq_iclow_stock_orders` | stock orders / pending receive |
 
 `upload-armas-apmas` remains available as a narrower alias (ARMAS/APMAS only).
 ### TAR catch-up (idempotent)

@@ -83,6 +83,24 @@ def cmd_sync_pomas_podet(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_upload_iclow(_args: argparse.Namespace) -> int:
+    """Drive raw_hq_iclow_stock_orders.csv -> raw_kcw."""
+    from src.kcw.upload_raw import upload_iclow
+
+    upload_iclow()
+    return 0
+
+
+def cmd_sync_iclow(_args: argparse.Namespace) -> int:
+    """Extract HQ ICLOW, then upload to Supabase."""
+    from src.kcw.extract_parts9 import ICLOW_TABLES, extract_tables
+    from src.kcw.upload_raw import upload_iclow
+
+    extract_tables("hq", tables=ICLOW_TABLES)
+    upload_iclow()
+    return 0
+
+
 def cmd_tar(args: argparse.Namespace) -> int:
     from src.kcw.tar import delete_fin_for_day, run_bill_generation_for_day, run_catchup
     from src.kcw.tar import load_raw_csvs, prepare_eligible_frames, supabase_db_url
@@ -149,7 +167,8 @@ def build_parser() -> argparse.ArgumentParser:
         "upload-daily-raw",
         help=(
             "Drive daily raw CSVs -> raw_kcw: armas/apmas, "
-            "pomas/podet (hq+syp), pimas/pidet (hq), icmas (hq+syp), rvmas (hq)"
+            "pomas/podet (hq+syp), pimas/pidet (hq), icmas (hq+syp), "
+            "rvmas (hq), iclow (hq)"
         ),
     )
     ud.set_defaults(func=cmd_upload_daily_raw)
@@ -172,6 +191,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     spo.add_argument("--site", choices=("hq", "syp"), required=True)
     spo.set_defaults(func=cmd_sync_pomas_podet)
+
+    ui = sub.add_parser(
+        "upload-iclow",
+        help="Drive raw_hq_iclow_stock_orders.csv -> raw_kcw (staging replace)",
+    )
+    ui.set_defaults(func=cmd_upload_iclow)
+
+    si = sub.add_parser(
+        "sync-iclow",
+        help="Extract HQ ICLOW then upload to raw_kcw (pending-receive tracker)",
+    )
+    si.set_defaults(func=cmd_sync_iclow)
 
     t = sub.add_parser("tar", help="TAR/3TAR/CNTAR catch-up or single day")
     t.add_argument("--catch-up", action="store_true", help="Process all missing days (default if no --date)")
