@@ -43,9 +43,9 @@ def test_cli_has_upload_commands():
     args = parser.parse_args(["upload-iclow"])
     assert args.func.__name__ == "cmd_upload_iclow"
     assert args.site is None
-    args = parser.parse_args(["sync-po-related"])
+    args = parser.parse_args(["sync-po-related", "--site", "hq"])
     assert args.func.__name__ == "cmd_sync_po_related"
-    assert args.site is None
+    assert args.site == "hq"
     args = parser.parse_args(["sync-po-related", "--site", "syp"])
     assert args.func.__name__ == "cmd_sync_po_related"
     assert args.site == "syp"

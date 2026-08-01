@@ -28,7 +28,8 @@ Local SQL Server is the only thing that must stay on the shop PCs. Everything af
 | **HQ A** | [`worker_tasks/run_hq_parts9_to_drive_raw.bat`](worker_tasks/run_hq_parts9_to_drive_raw.bat) | `PARTS9` → `raw_hq_*.csv`, then daily raw → Supabase `raw_kcw` |
 | **HQ** | [`worker_tasks/run_hq_pomas_podet_sync.bat`](worker_tasks/run_hq_pomas_podet_sync.bat) | POMAS/PODET only → Drive + Supabase `raw_hq_*` |
 | **HQ** | [`worker_tasks/run_hq_iclow_sync.bat`](worker_tasks/run_hq_iclow_sync.bat) | ICLOW only → Drive + Supabase `raw_hq_iclow_stock_orders` |
-| **HQ** (or any PC that can reach both PARTS9) | [`worker_tasks/run_po_related_sync.bat`](worker_tasks/run_po_related_sync.bat) | One trigger: POMAS/PODET + ICLOW for **both** sites, then inventory on-hand qty (`run_inventory_sync.bat`) |
+| **HQ** | [`worker_tasks/run_hq_po_related_sync.bat`](worker_tasks/run_hq_po_related_sync.bat) | POMAS/PODET + ICLOW (HQ) → Drive + Supabase, then inventory on-hand qty |
+| **SYP** | [`worker_tasks/run_syp_po_related_sync.bat`](worker_tasks/run_syp_po_related_sync.bat) | POMAS/PODET + ICLOW (SYP) → Drive + Supabase, then inventory on-hand qty |
 | **HQ B** | [`worker_tasks/run_hq_parts9_full_pipeline.bat`](worker_tasks/run_hq_parts9_full_pipeline.bat) | HQ A + archive + curated + VAT/TAR + Excel + upload |
 | **HQ** | [`worker_tasks/run_bank_statement_import.bat`](worker_tasks/run_bank_statement_import.bat) | Drive `01_raw/statement` (KBANK+KTB) → Supabase `bank.statement_*` |
 
@@ -57,8 +58,8 @@ python -m src.kcw.pipeline sync-pomas-podet --site hq
 python -m src.kcw.pipeline sync-pomas-podet --site syp
 python -m src.kcw.pipeline sync-iclow --site hq
 python -m src.kcw.pipeline sync-iclow --site syp
-python -m src.kcw.pipeline sync-po-related
 python -m src.kcw.pipeline sync-po-related --site hq
+python -m src.kcw.pipeline sync-po-related --site syp
 python -m src.kcw.pipeline upload-iclow --site hq
 python -m src.kcw.pipeline upload-iclow
 python -m src.kcw.pipeline upload-po-related
@@ -74,7 +75,7 @@ python -m src.kcw.pipeline tar --reprocess 2026-07-20
 
 `sync-iclow --site {hq|syp}` extracts that site's `ICLOW` (stock-order / ค้างรับ tracker) to Drive, then uploads to `raw_kcw.raw_{site}_iclow_stock_orders`. See [`docs/parts9_pending_receive.md`](docs/parts9_pending_receive.md).
 
-`sync-po-related` (optional `--site hq|syp`) extracts `POMAS`/`PODET` + `ICLOW`, then uploads those tables. With no `--site` it runs HQ then SYP (both PARTS9 servers must be reachable). Worker BAT [`worker_tasks/run_po_related_sync.bat`](worker_tasks/run_po_related_sync.bat) also runs inventory on-hand qty afterward via [`run_inventory_sync.bat`](worker_tasks/run_inventory_sync.bat) → `curated_kcw.inventory_qty_latest` (not ICMAS raw).
+`sync-po-related --site {hq|syp}` extracts `POMAS`/`PODET` + `ICLOW` for that site only (HQ and SYP must run on separate machines). Worker BATs [`run_hq_po_related_sync.bat`](worker_tasks/run_hq_po_related_sync.bat) / [`run_syp_po_related_sync.bat`](worker_tasks/run_syp_po_related_sync.bat) also run inventory on-hand qty afterward via [`run_inventory_sync.bat`](worker_tasks/run_inventory_sync.bat) → `curated_kcw.inventory_qty_latest` (not ICMAS raw).
 
 `upload-daily-raw` (HQ A after extract) replaces these `raw_kcw` tables via staging from Drive CSVs:
 

@@ -111,21 +111,19 @@ def cmd_upload_po_related(args: argparse.Namespace) -> int:
 
 def cmd_sync_po_related(args: argparse.Namespace) -> int:
     """
-    Extract POMAS/PODET + ICLOW, then upload to Supabase.
+    Extract POMAS/PODET + ICLOW for one site, then upload to Supabase.
 
-    --site omitted: run HQ then SYP (both PARTS9 servers must be reachable).
-
+    HQ and SYP run separately (different PARTS9 servers / machines).
     Inventory on-hand qty is separate (run_inventory_sync.bat / notebook 50).
     """
     from src.kcw.extract_parts9 import PO_RELATED_TABLES, extract_tables
     from src.kcw.upload_raw import upload_po_related
 
-    sites = ("hq", "syp") if args.site is None else (args.site,)
-    for site in sites:
-        print(f"[sync-po-related] site={site} tables={','.join(PO_RELATED_TABLES)}")
-        extract_tables(site, tables=PO_RELATED_TABLES)
-        upload_po_related(site)
-        print(f"[sync-po-related] DONE site={site}")
+    site = args.site
+    print(f"[sync-po-related] site={site} tables={','.join(PO_RELATED_TABLES)}")
+    extract_tables(site, tables=PO_RELATED_TABLES)
+    upload_po_related(site)
+    print(f"[sync-po-related] DONE site={site}")
     return 0
 
 
@@ -260,17 +258,12 @@ def build_parser() -> argparse.ArgumentParser:
     spr = sub.add_parser(
         "sync-po-related",
         help=(
-            "Extract POMAS/PODET + ICLOW then upload to raw_kcw "
-            "(one site, or both when --site omitted). "
+            "Extract POMAS/PODET + ICLOW for one site then upload to raw_kcw. "
+            "HQ and SYP must run separately. "
             "Does not update inventory_qty_latest — use run_inventory_sync.bat for that."
         ),
     )
-    spr.add_argument(
-        "--site",
-        choices=("hq", "syp"),
-        default=None,
-        help="One site only (default: HQ then SYP — both PARTS9 servers must be reachable)",
-    )
+    spr.add_argument("--site", choices=("hq", "syp"), required=True)
     spr.set_defaults(func=cmd_sync_po_related)
 
     t = sub.add_parser("tar", help="TAR/3TAR/CNTAR catch-up or single day")
