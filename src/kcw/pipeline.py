@@ -139,6 +139,12 @@ def cmd_tar(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_backfill_statement_accounts(args: argparse.Namespace) -> int:
+    from src.kcw.backfill_statement_accounts import backfill
+
+    return backfill(apply=bool(args.apply))
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="python -m src.kcw.pipeline",
@@ -223,6 +229,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="Delete fin_* for day then regenerate (explicit; does not rewind seq)",
     )
     t.set_defaults(func=cmd_tar)
+
+    bsa = sub.add_parser(
+        "backfill-statement-accounts",
+        help=(
+            "Re-read statement Excel on Drive; update account_no + fingerprints "
+            "(HQ PC with Drive mounted; dry-run by default)"
+        ),
+    )
+    bsa.add_argument(
+        "--apply",
+        action="store_true",
+        help="Write updates to Supabase (default: dry-run only)",
+    )
+    bsa.set_defaults(func=cmd_backfill_statement_accounts)
 
     return p
 
