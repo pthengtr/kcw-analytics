@@ -83,9 +83,12 @@ python -m src.kcw.pipeline sync-iclow --site syp
 ```
 
 Worker BATs:
-- HQ: [`worker_tasks/run_hq_iclow_sync.bat`](../worker_tasks/run_hq_iclow_sync.bat)
-- SYP: [`worker_tasks/run_syp_iclow_sync.bat`](../worker_tasks/run_syp_iclow_sync.bat)
-- Both sites + PO + inventory qty: [`worker_tasks/run_po_related_sync.bat`](../worker_tasks/run_po_related_sync.bat) (`sync-po-related` then `run_inventory_sync.bat`)
+- HQ ICLOW only: [`worker_tasks/run_hq_iclow_sync.bat`](../worker_tasks/run_hq_iclow_sync.bat)
+- SYP ICLOW only: [`worker_tasks/run_syp_iclow_sync.bat`](../worker_tasks/run_syp_iclow_sync.bat)
+- HQ PO+ICLOW + inventory: [`worker_tasks/run_hq_po_related_sync.bat`](../worker_tasks/run_hq_po_related_sync.bat)
+- SYP PO+ICLOW + inventory: [`worker_tasks/run_syp_po_related_sync.bat`](../worker_tasks/run_syp_po_related_sync.bat)
+
+HQ and SYP must run separately (different PARTS9 servers).
 
 Also included in daily HQ/SYP extracts and `upload-daily-raw` (HQ A uploads both sites from Drive).
 
