@@ -356,35 +356,6 @@ def upload_iclow(
     )
 
 
-def upload_icmas(
-    site: str | None = None,
-    *,
-    raw_folder: Optional[Path] = None,
-    db_url: Optional[str] = None,
-) -> list[dict]:
-    """
-    Upload ICMAS (product / stock master) Drive CSVs to raw_kcw.
-
-    site=None -> both HQ and SYP
-    site='hq'|'syp' -> that site only
-    """
-    if site is None:
-        specs = ICMAS_UPLOADS
-        label = "icmas"
-    else:
-        site = site.lower()
-        if site not in ("hq", "syp"):
-            raise ValueError("site must be 'hq', 'syp', or None")
-        specs = tuple(s for s in ICMAS_UPLOADS if s["site"] == site)
-        label = f"icmas-{site}"
-    return upload_raw_specs(
-        specs,
-        raw_folder=raw_folder,
-        db_url=db_url,
-        label=label,
-    )
-
-
 def upload_po_related(
     site: str | None = None,
     *,
@@ -392,14 +363,16 @@ def upload_po_related(
     db_url: Optional[str] = None,
 ) -> list[dict]:
     """
-    Upload PO-related Drive CSVs to raw_kcw: POMAS/PODET + ICMAS + ICLOW.
+    Upload PO-related Drive CSVs to raw_kcw: POMAS/PODET + ICLOW.
 
     site=None -> both HQ and SYP
     site='hq'|'syp' -> that site only
+
+    Note: on-hand inventory qty (curated_kcw.inventory_qty_latest) is not
+    part of this upload — use run_inventory_sync.bat / notebook 50.
     """
     results: list[dict] = []
     results.extend(upload_pomas_podet(site, raw_folder=raw_folder, db_url=db_url))
-    results.extend(upload_icmas(site, raw_folder=raw_folder, db_url=db_url))
     results.extend(upload_iclow(site, raw_folder=raw_folder, db_url=db_url))
     return results
 
