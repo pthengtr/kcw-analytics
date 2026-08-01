@@ -43,9 +43,22 @@ def test_cli_has_upload_commands():
     args = parser.parse_args(["upload-iclow"])
     assert args.func.__name__ == "cmd_upload_iclow"
     assert args.site is None
+    args = parser.parse_args(["sync-icmas", "--site", "hq"])
+    assert args.func.__name__ == "cmd_sync_icmas"
+    args = parser.parse_args(["upload-icmas"])
+    assert args.func.__name__ == "cmd_upload_icmas"
+    assert args.site is None
+    args = parser.parse_args(["sync-po-related"])
+    assert args.func.__name__ == "cmd_sync_po_related"
+    assert args.site is None
+    args = parser.parse_args(["sync-po-related", "--site", "syp"])
+    assert args.func.__name__ == "cmd_sync_po_related"
+    assert args.site == "syp"
+    args = parser.parse_args(["upload-po-related", "--site", "hq"])
+    assert args.func.__name__ == "cmd_upload_po_related"
     args = parser.parse_args(["extract", "--site", "hq", "--tables", "POMAS,PODET"])
     assert args.tables == "POMAS,PODET"
-    print("CLI upload/sync PO/ICLOW commands registered")
+    print("CLI upload/sync PO/ICLOW/ICMAS/po-related commands registered")
 
 
 def test_upload_specs():
@@ -114,7 +127,14 @@ def test_refresh_rejects_empty_df():
 
 
 def test_extract_includes_pomas_podet():
-    from src.kcw.extract_parts9 import ICLOW_TABLES, PO_TABLES, SYP_MINIMAL, TABLE_SPECS
+    from src.kcw.extract_parts9 import (
+        ICMAS_TABLES,
+        ICLOW_TABLES,
+        PO_RELATED_TABLES,
+        PO_TABLES,
+        SYP_MINIMAL,
+        TABLE_SPECS,
+    )
 
     assert "POMAS" in TABLE_SPECS and "PODET" in TABLE_SPECS
     assert TABLE_SPECS["POMAS"]["date_col"] == "DOCDATE"
@@ -122,12 +142,14 @@ def test_extract_includes_pomas_podet():
     assert "POMAS" in SYP_MINIMAL and "PODET" in SYP_MINIMAL
     assert "PIMAS" not in SYP_MINIMAL and "PIDET" not in SYP_MINIMAL
     assert PO_TABLES == ("PODET", "POMAS")
+    assert ICMAS_TABLES == ("ICMAS",)
     assert "ICLOW" in TABLE_SPECS
     assert TABLE_SPECS["ICLOW"]["years"] is None
     assert TABLE_SPECS["ICLOW"]["suffix"] == "iclow_stock_orders"
     assert ICLOW_TABLES == ("ICLOW",)
     assert "ICLOW" in SYP_MINIMAL
-    print("Extract TABLE_SPECS / SYP_MINIMAL / PO_TABLES / ICLOW_TABLES OK")
+    assert PO_RELATED_TABLES == ("PODET", "POMAS", "ICMAS", "ICLOW")
+    print("Extract TABLE_SPECS / SYP_MINIMAL / PO_TABLES / ICMAS / ICLOW / PO_RELATED OK")
 
 
 def test_supabase_db_url_rejects_https_api_url(monkeypatch_env=None):

@@ -50,8 +50,14 @@ SYP_MINIMAL = ("PODET", "POMAS", "SIDET", "SIMAS", "ICMAS", "ICLOW")
 # Focused PO sync (HQ/SYP worker tasks).
 PO_TABLES = ("PODET", "POMAS")
 
+# Focused ICMAS sync (product / stock masters).
+ICMAS_TABLES = ("ICMAS",)
+
 # Focused ICLOW sync (HQ/SYP pending-receive / stock-order tracker).
 ICLOW_TABLES = ("ICLOW",)
+
+# One-shot PO-related sync: purchase orders + product masters + stock-order tracker.
+PO_RELATED_TABLES = ("PODET", "POMAS", "ICMAS", "ICLOW")
 
 def site_env_prefix(site: str) -> str:
     site = site.lower()

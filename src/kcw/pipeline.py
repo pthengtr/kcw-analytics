@@ -101,6 +101,50 @@ def cmd_sync_iclow(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_upload_icmas(args: argparse.Namespace) -> int:
+    """Drive raw_{site}_icmas_products.csv -> raw_kcw (one site or both)."""
+    from src.kcw.upload_raw import upload_icmas
+
+    upload_icmas(args.site)
+    return 0
+
+
+def cmd_sync_icmas(args: argparse.Namespace) -> int:
+    """Extract ICMAS for a site, then upload that site to Supabase."""
+    from src.kcw.extract_parts9 import ICMAS_TABLES, extract_tables
+    from src.kcw.upload_raw import upload_icmas
+
+    extract_tables(args.site, tables=ICMAS_TABLES)
+    upload_icmas(args.site)
+    return 0
+
+
+def cmd_upload_po_related(args: argparse.Namespace) -> int:
+    """Drive PO/ICMAS/ICLOW CSVs -> raw_kcw (one site or both)."""
+    from src.kcw.upload_raw import upload_po_related
+
+    upload_po_related(args.site)
+    return 0
+
+
+def cmd_sync_po_related(args: argparse.Namespace) -> int:
+    """
+    Extract POMAS/PODET + ICMAS + ICLOW, then upload to Supabase.
+
+    --site omitted: run HQ then SYP (both PARTS9 servers must be reachable).
+    """
+    from src.kcw.extract_parts9 import PO_RELATED_TABLES, extract_tables
+    from src.kcw.upload_raw import upload_po_related
+
+    sites = ("hq", "syp") if args.site is None else (args.site,)
+    for site in sites:
+        print(f"[sync-po-related] site={site} tables={','.join(PO_RELATED_TABLES)}")
+        extract_tables(site, tables=PO_RELATED_TABLES)
+        upload_po_related(site)
+        print(f"[sync-po-related] DONE site={site}")
+    return 0
+
+
 def cmd_tar(args: argparse.Namespace) -> int:
     from src.kcw.tar import delete_fin_for_day, run_bill_generation_for_day, run_catchup
     from src.kcw.tar import load_raw_csvs, prepare_eligible_frames, supabase_db_url
@@ -216,6 +260,52 @@ def build_parser() -> argparse.ArgumentParser:
     )
     si.add_argument("--site", choices=("hq", "syp"), required=True)
     si.set_defaults(func=cmd_sync_iclow)
+
+    uic = sub.add_parser(
+        "upload-icmas",
+        help="Drive raw_{site}_icmas_products.csv -> raw_kcw (staging replace)",
+    )
+    uic.add_argument(
+        "--site",
+        choices=("hq", "syp"),
+        default=None,
+        help="Upload one site only (default: both)",
+    )
+    uic.set_defaults(func=cmd_upload_icmas)
+
+    sic = sub.add_parser(
+        "sync-icmas",
+        help="Extract ICMAS for a site then upload that site to raw_kcw (product/stock masters)",
+    )
+    sic.add_argument("--site", choices=("hq", "syp"), required=True)
+    sic.set_defaults(func=cmd_sync_icmas)
+
+    upr = sub.add_parser(
+        "upload-po-related",
+        help="Drive POMAS/PODET + ICMAS + ICLOW CSVs -> raw_kcw (staging replace)",
+    )
+    upr.add_argument(
+        "--site",
+        choices=("hq", "syp"),
+        default=None,
+        help="Upload one site only (default: both)",
+    )
+    upr.set_defaults(func=cmd_upload_po_related)
+
+    spr = sub.add_parser(
+        "sync-po-related",
+        help=(
+            "Extract POMAS/PODET + ICMAS + ICLOW then upload to raw_kcw "
+            "(one site, or both when --site omitted)"
+        ),
+    )
+    spr.add_argument(
+        "--site",
+        choices=("hq", "syp"),
+        default=None,
+        help="One site only (default: HQ then SYP — both PARTS9 servers must be reachable)",
+    )
+    spr.set_defaults(func=cmd_sync_po_related)
 
     t = sub.add_parser("tar", help="TAR/3TAR/CNTAR catch-up or single day")
     t.add_argument("--catch-up", action="store_true", help="Process all missing days (default if no --date)")
