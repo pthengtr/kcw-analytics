@@ -127,6 +127,26 @@ def cmd_sync_po_related(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_upload_simas_sidet(_args: argparse.Namespace) -> int:
+    """Drive raw_hq_simas/sidet CSVs -> raw_kcw (HQ only, latest 6 months)."""
+    from src.kcw.upload_raw import upload_simas_sidet
+
+    upload_simas_sidet()
+    return 0
+
+
+def cmd_sync_simas_sidet(_args: argparse.Namespace) -> int:
+    """Extract HQ SIDET/SIMAS, then upload latest 6 months to raw_kcw."""
+    from src.kcw.extract_parts9 import SI_TABLES, extract_tables
+    from src.kcw.upload_raw import upload_simas_sidet
+
+    print(f"[sync-simas-sidet] site=hq tables={','.join(SI_TABLES)}")
+    extract_tables("hq", tables=SI_TABLES)
+    upload_simas_sidet()
+    print("[sync-simas-sidet] DONE site=hq")
+    return 0
+
+
 def cmd_tar(args: argparse.Namespace) -> int:
     from src.kcw.tar import delete_fin_for_day, run_bill_generation_for_day, run_catchup
     from src.kcw.tar import load_raw_csvs, prepare_eligible_frames, supabase_db_url
@@ -200,7 +220,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Drive daily raw CSVs -> raw_kcw: armas/apmas, "
             "pomas/podet (hq+syp), pimas/pidet (hq), icmas (hq+syp), "
-            "rvmas/pvmas (hq), iclow (hq+syp)"
+            "rvmas/pvmas (hq), iclow (hq+syp), simas/sidet (hq, 6 months)"
         ),
     )
     ud.set_defaults(func=cmd_upload_daily_raw)
@@ -265,6 +285,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     spr.add_argument("--site", choices=("hq", "syp"), required=True)
     spr.set_defaults(func=cmd_sync_po_related)
+
+    usi = sub.add_parser(
+        "upload-simas-sidet",
+        help="Drive raw_hq_simas/sidet CSVs -> raw_kcw (HQ only, latest 6 months)",
+    )
+    usi.set_defaults(func=cmd_upload_simas_sidet)
+
+    ssi = sub.add_parser(
+        "sync-simas-sidet",
+        help="Extract HQ SIDET/SIMAS then upload latest 6 months to raw_kcw",
+    )
+    ssi.set_defaults(func=cmd_sync_simas_sidet)
 
     t = sub.add_parser("tar", help="TAR/3TAR/CNTAR catch-up or single day")
     t.add_argument("--catch-up", action="store_true", help="Process all missing days (default if no --date)")

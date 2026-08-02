@@ -118,6 +118,24 @@ ICLOW_UPLOADS = (
     },
 )
 
+# Sales invoices / lines: HQ only. Supabase raw keeps the latest 6 months from max BILLDATE.
+SIMAS_SIDET_UPLOADS = (
+    {
+        "csv_name": "raw_hq_sidet_sales_lines.csv",
+        "main_table": "raw_kcw.raw_hq_sidet_sales_lines",
+        "staging_table": "raw_kcw.raw_hq_sidet_sales_lines_stg",
+        "date_col": "BILLDATE",
+        "months": 6,
+    },
+    {
+        "csv_name": "raw_hq_simas_sales_bills.csv",
+        "main_table": "raw_kcw.raw_hq_simas_sales_bills",
+        "staging_table": "raw_kcw.raw_hq_simas_sales_bills_stg",
+        "date_col": "BILLDATE",
+        "months": 6,
+    },
+)
+
 # Daily HQ A upload set (run after SYP + HQ extracts land on Drive).
 DAILY_RAW_UPLOADS = (
     ARMAS_APMAS_UPLOADS
@@ -127,6 +145,7 @@ DAILY_RAW_UPLOADS = (
     + RVMAS_UPLOADS
     + PVMAS_UPLOADS
     + ICLOW_UPLOADS
+    + SIMAS_SIDET_UPLOADS
 )
 
 
@@ -241,6 +260,29 @@ def _read_raw_csv(path: Path) -> pd.DataFrame:
     return pd.read_csv(path, dtype="string", encoding="utf-8-sig", low_memory=False)
 
 
+def _maybe_filter_upload_df(df: pd.DataFrame, spec: dict) -> pd.DataFrame:
+    months = spec.get("months")
+    years = spec.get("years")
+    if months is None and years is None:
+        return df
+
+    from src.kcw.supabase_utils import filter_last_months_from_latest, filter_last_year_from_latest
+
+    date_col = spec.get("date_col", "BILLDATE")
+    before = len(df)
+    if months is not None:
+        df = filter_last_months_from_latest(df, date_col, months=int(months))
+        label = f"{months}m"
+    else:
+        df = filter_last_year_from_latest(df, date_col, years=int(years))
+        label = f"{years}y"
+    print(
+        f"[upload-raw] filtered {spec['csv_name']} to last {label} "
+        f"from latest {date_col}: {before:,} -> {len(df):,} rows"
+    )
+    return df
+
+
 def upload_raw_specs(
     specs: tuple[dict, ...],
     *,
@@ -261,6 +303,7 @@ def upload_raw_specs(
             csv_path = raw / spec["csv_name"]
             print(f"[upload-raw] reading {csv_path.name} ...")
             df = _read_raw_csv(csv_path)
+            df = _maybe_filter_upload_df(df, spec)
             print(f"[upload-raw] {csv_path.name} rows={len(df):,} cols={len(df.columns)}")
             result = refresh_table_via_staging_df(
                 conn=conn,
@@ -377,6 +420,24 @@ def upload_po_related(
     return results
 
 
+def upload_simas_sidet(
+    *,
+    raw_folder: Optional[Path] = None,
+    db_url: Optional[str] = None,
+) -> list[dict]:
+    """
+    Upload HQ SIMAS/SIDET Drive CSVs to raw_kcw (latest 6 months from max BILLDATE).
+
+    HQ only — SYP sales stay on Drive for curated notebooks; Supabase raw is HQ-only.
+    """
+    return upload_raw_specs(
+        SIMAS_SIDET_UPLOADS,
+        raw_folder=raw_folder,
+        db_url=db_url,
+        label="simas/sidet-hq",
+    )
+
+
 def upload_daily_raw(
     *,
     raw_folder: Optional[Path] = None,
@@ -392,6 +453,7 @@ def upload_daily_raw(
       - HQ RVMAS (receipt / notes vouchers; includes RC*)
       - HQ PVMAS (payment / notes vouchers; includes P* / KCPN*)
       - HQ + SYP ICLOW (stock-order / pending-receive tracker)
+      - HQ SIMAS / SIDET (sales bills + lines; latest 6 months only)
     """
     return upload_raw_specs(
         DAILY_RAW_UPLOADS,
