@@ -149,6 +149,33 @@ DAILY_RAW_UPLOADS = (
 )
 
 
+def _table_data_columns(conn, table: str) -> set[str]:
+    schema, name = table.split(".", 1) if "." in table else ("public", table)
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select column_name
+            from information_schema.columns
+            where table_schema = %s
+              and table_name = %s
+              and column_name not in ('_ingested_at', '_source_file')
+            """,
+            (schema, name),
+        )
+        return {row[0] for row in cur.fetchall()}
+
+
+def _validate_df_table_columns(conn, df: pd.DataFrame, main_table: str) -> None:
+    table_cols = _table_data_columns(conn, main_table)
+    df_cols = {str(c) for c in df.columns}
+    missing_in_table = sorted(df_cols - table_cols)
+    if missing_in_table:
+        raise ValueError(
+            f"CSV columns missing from {main_table}: {missing_in_table}. "
+            "Apply the latest Supabase migration or fix the table DDL."
+        )
+
+
 def refresh_table_via_staging_df(
     conn,
     df: pd.DataFrame,
@@ -194,6 +221,7 @@ def refresh_table_via_staging_df(
             (like {main_table} including all)
             """
         )
+        _validate_df_table_columns(conn, load_df, main_table)
         cur.execute(f"delete from {staging_table}")
 
         with cur.copy(copy_sql) as copy:
