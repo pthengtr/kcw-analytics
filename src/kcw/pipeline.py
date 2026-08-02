@@ -113,17 +113,44 @@ def cmd_sync_po_related(args: argparse.Namespace) -> int:
     """
     Extract POMAS/PODET + ICLOW for one site, then upload to Supabase.
 
-    HQ and SYP run separately (different PARTS9 servers / machines).
+    HQ also extracts SIDET/SIMAS and uploads latest 6 months to raw_kcw (HQ-only).
+    SYP runs separately (different PARTS9 servers / machines).
     Inventory on-hand qty is separate (run_inventory_sync.bat / notebook 50).
     """
-    from src.kcw.extract_parts9 import PO_RELATED_TABLES, extract_tables
-    from src.kcw.upload_raw import upload_po_related
+    from src.kcw.extract_parts9 import PO_RELATED_TABLES, SI_TABLES, extract_tables
+    from src.kcw.upload_raw import upload_po_related, upload_simas_sidet
 
     site = args.site
     print(f"[sync-po-related] site={site} tables={','.join(PO_RELATED_TABLES)}")
     extract_tables(site, tables=PO_RELATED_TABLES)
     upload_po_related(site)
+
+    if site == "hq":
+        print(f"[sync-po-related] site=hq sales tables={','.join(SI_TABLES)} (6 months)")
+        extract_tables("hq", tables=SI_TABLES)
+        upload_simas_sidet()
+
     print(f"[sync-po-related] DONE site={site}")
+    return 0
+
+
+def cmd_upload_simas_sidet(_args: argparse.Namespace) -> int:
+    """Drive raw_hq_simas/sidet CSVs -> raw_kcw (HQ only, latest 6 months)."""
+    from src.kcw.upload_raw import upload_simas_sidet
+
+    upload_simas_sidet()
+    return 0
+
+
+def cmd_sync_simas_sidet(_args: argparse.Namespace) -> int:
+    """Extract HQ SIDET/SIMAS, then upload latest 6 months to raw_kcw."""
+    from src.kcw.extract_parts9 import SI_TABLES, extract_tables
+    from src.kcw.upload_raw import upload_simas_sidet
+
+    print(f"[sync-simas-sidet] site=hq tables={','.join(SI_TABLES)}")
+    extract_tables("hq", tables=SI_TABLES)
+    upload_simas_sidet()
+    print("[sync-simas-sidet] DONE site=hq")
     return 0
 
 
@@ -200,7 +227,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Drive daily raw CSVs -> raw_kcw: armas/apmas, "
             "pomas/podet (hq+syp), pimas/pidet (hq), icmas (hq+syp), "
-            "rvmas/pvmas (hq), iclow (hq+syp)"
+            "rvmas/pvmas (hq), iclow (hq+syp), simas/sidet (hq, 6 months)"
         ),
     )
     ud.set_defaults(func=cmd_upload_daily_raw)
@@ -259,12 +286,25 @@ def build_parser() -> argparse.ArgumentParser:
         "sync-po-related",
         help=(
             "Extract POMAS/PODET + ICLOW for one site then upload to raw_kcw. "
+            "HQ also syncs SIDET/SIMAS (latest 6 months). "
             "HQ and SYP must run separately. "
             "Does not update inventory_qty_latest — use run_inventory_sync.bat for that."
         ),
     )
     spr.add_argument("--site", choices=("hq", "syp"), required=True)
     spr.set_defaults(func=cmd_sync_po_related)
+
+    usi = sub.add_parser(
+        "upload-simas-sidet",
+        help="Drive raw_hq_simas/sidet CSVs -> raw_kcw (HQ only, latest 6 months)",
+    )
+    usi.set_defaults(func=cmd_upload_simas_sidet)
+
+    ssi = sub.add_parser(
+        "sync-simas-sidet",
+        help="Extract HQ SIDET/SIMAS then upload latest 6 months to raw_kcw",
+    )
+    ssi.set_defaults(func=cmd_sync_simas_sidet)
 
     t = sub.add_parser("tar", help="TAR/3TAR/CNTAR catch-up or single day")
     t.add_argument("--catch-up", action="store_true", help="Process all missing days (default if no --date)")

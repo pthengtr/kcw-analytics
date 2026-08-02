@@ -20,6 +20,7 @@ from src.kcw.upload_raw import (  # noqa: E402
     POMAS_PODET_UPLOADS,
     PVMAS_UPLOADS,
     RVMAS_UPLOADS,
+    SIMAS_SIDET_UPLOADS,
     refresh_table_via_staging_df,
 )
 
@@ -51,6 +52,10 @@ def test_cli_has_upload_commands():
     assert args.site == "syp"
     args = parser.parse_args(["upload-po-related", "--site", "hq"])
     assert args.func.__name__ == "cmd_upload_po_related"
+    args = parser.parse_args(["sync-simas-sidet"])
+    assert args.func.__name__ == "cmd_sync_simas_sidet"
+    args = parser.parse_args(["upload-simas-sidet"])
+    assert args.func.__name__ == "cmd_upload_simas_sidet"
     args = parser.parse_args(["extract", "--site", "hq", "--tables", "POMAS,PODET"])
     assert args.tables == "POMAS,PODET"
     print("CLI upload/sync PO/ICLOW/po-related commands registered")
@@ -88,6 +93,14 @@ def test_upload_specs():
         "raw_hq_iclow_stock_orders.csv",
         "raw_syp_iclow_stock_orders.csv",
     }
+    si = {s["csv_name"] for s in SIMAS_SIDET_UPLOADS}
+    assert si == {
+        "raw_hq_sidet_sales_lines.csv",
+        "raw_hq_simas_sales_bills.csv",
+    }
+    for spec in SIMAS_SIDET_UPLOADS:
+        assert spec["months"] == 6
+        assert spec["date_col"] == "BILLDATE"
     assert len(DAILY_RAW_UPLOADS) == (
         len(ARMAS_APMAS_UPLOADS)
         + len(POMAS_PODET_UPLOADS)
@@ -96,6 +109,7 @@ def test_upload_specs():
         + len(RVMAS_UPLOADS)
         + len(PVMAS_UPLOADS)
         + len(ICLOW_UPLOADS)
+        + len(SIMAS_SIDET_UPLOADS)
     )
     for spec in DAILY_RAW_UPLOADS:
         assert spec["main_table"].startswith("raw_kcw.")
@@ -121,11 +135,26 @@ def test_refresh_rejects_empty_df():
     print("Empty dataframe guard OK")
 
 
+def test_filter_last_months_from_latest():
+    from src.kcw.supabase_utils import filter_last_months_from_latest
+
+    df = pd.DataFrame(
+        {
+            "BILLDATE": ["2026-01-01", "2026-06-15", "2025-12-01"],
+            "ID": ["1", "2", "3"],
+        }
+    )
+    out = filter_last_months_from_latest(df, "BILLDATE", months=6)
+    assert set(out["ID"]) == {"1", "2"}
+    print("6-month date filter OK")
+
+
 def test_extract_includes_pomas_podet():
     from src.kcw.extract_parts9 import (
         ICLOW_TABLES,
         PO_RELATED_TABLES,
         PO_TABLES,
+        SI_TABLES,
         SYP_MINIMAL,
         TABLE_SPECS,
     )
@@ -142,8 +171,9 @@ def test_extract_includes_pomas_podet():
     assert ICLOW_TABLES == ("ICLOW",)
     assert "ICLOW" in SYP_MINIMAL
     assert PO_RELATED_TABLES == ("PODET", "POMAS", "ICLOW")
+    assert SI_TABLES == ("SIDET", "SIMAS")
     assert "ICMAS" not in PO_RELATED_TABLES
-    print("Extract TABLE_SPECS / SYP_MINIMAL / PO_TABLES / ICLOW / PO_RELATED OK")
+    print("Extract TABLE_SPECS / SYP_MINIMAL / PO_TABLES / ICLOW / PO_RELATED / SI OK")
 
 
 def test_supabase_db_url_rejects_https_api_url(monkeypatch_env=None):
@@ -187,6 +217,7 @@ if __name__ == "__main__":
     test_cli_has_upload_commands()
     test_upload_specs()
     test_refresh_rejects_empty_df()
+    test_filter_last_months_from_latest()
     test_extract_includes_pomas_podet()
     test_supabase_db_url_rejects_https_api_url()
     print("\nAll daily-raw upload checks passed.")

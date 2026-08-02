@@ -58,6 +58,9 @@ ICLOW_TABLES = ("ICLOW",)
 # (notebook 50 / run_inventory_sync.bat) — not ICMAS raw upload.
 PO_RELATED_TABLES = ("PODET", "POMAS", "ICLOW")
 
+# Focused sales sync (HQ only for Supabase raw upload).
+SI_TABLES = ("SIDET", "SIMAS")
+
 def site_env_prefix(site: str) -> str:
     site = site.lower()
     if site not in ("hq", "syp"):
