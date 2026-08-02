@@ -1,10 +1,11 @@
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
 
-REM HQ only: PO-related data + inventory on-hand qty
+REM HQ only: PO-related data + HQ sales raw + inventory on-hand qty
 REM   1) POMAS / PODET  (purchase orders)
 REM   2) ICLOW          (stock-order / ค้างรับ)
-REM   3) inventory sync (notebook 50 -> curated_kcw.inventory_qty_latest)
+REM   3) SIDET / SIMAS  (HQ sales lines + bills -> Supabase raw, latest 6 months)
+REM   4) inventory sync (notebook 50 -> curated_kcw.inventory_qty_latest)
 REM      Note: inventory uses BRANCH + KSS_* from .env (not ICMAS raw upload).
 REM
 REM Requires network reachability to HQ PARTS9 (KSS / PARTS9_HQ_*), plus Supabase DB URL.
@@ -45,12 +46,12 @@ exit /b 1
 
 echo ==========================================
 echo HQ PO-related sync -^> Drive + Supabase
-echo Tables: POMAS/PODET + ICLOW
+echo Tables: POMAS/PODET + ICLOW + SIDET/SIMAS ^(6 months^)
 echo Site: hq
 if "!SKIP_INVENTORY!"=="1" (
     echo Inventory: skipped
 ) else (
-    echo Inventory: run_inventory_sync.bat after PO/ICLOW
+    echo Inventory: run_inventory_sync.bat after PO/ICLOW/sales
 )
 echo Python: %KCW_ANALYTICS_PYTHON%
 echo Repo: %cd%
@@ -60,17 +61,17 @@ echo ==========================================
 "%KCW_ANALYTICS_PYTHON%" -c "from src.kcw import paths; print('raw_dir=', paths.raw_dir())" > "%LOG%" 2>&1
 
 echo.
-echo --- 1/2: POMAS/PODET + ICLOW ^(hq^) ---
+echo --- 1/2: POMAS/PODET + ICLOW + SIDET/SIMAS ^(hq^) ---
 "%KCW_ANALYTICS_PYTHON%" -m src.kcw.pipeline sync-po-related --site hq >> "%LOG%" 2>&1
 if %ERRORLEVEL% NEQ 0 (
-    echo FAILED: HQ PO/ICLOW sync
+    echo FAILED: HQ PO/ICLOW/sales sync
     echo Check log: "%LOG%"
     echo --- last lines of sync_hq_po_related.log ---
     powershell -NoProfile -Command "Get-Content -LiteralPath '%LOG%' -Tail 40 -ErrorAction SilentlyContinue"
     echo ------------------------------------
     exit /b %ERRORLEVEL%
 )
-echo DONE: HQ POMAS/PODET + ICLOW
+echo DONE: HQ POMAS/PODET + ICLOW + SIDET/SIMAS
 
 if "!SKIP_INVENTORY!"=="1" goto :all_done
 
@@ -85,6 +86,6 @@ if errorlevel 1 (
 :all_done
 echo.
 echo ALL DONE: HQ PO-related sync
-echo Check Drive raw_hq_pomas / podet / iclow_stock_orders
+echo Check Drive raw_hq_pomas / podet / iclow / sidet / simas
 echo Check Supabase raw_kcw matching tables + curated_kcw.inventory_qty_latest
 exit /b 0

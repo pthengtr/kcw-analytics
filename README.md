@@ -28,8 +28,8 @@ Local SQL Server is the only thing that must stay on the shop PCs. Everything af
 | **HQ A** | [`worker_tasks/run_hq_parts9_to_drive_raw.bat`](worker_tasks/run_hq_parts9_to_drive_raw.bat) | `PARTS9` → `raw_hq_*.csv`, then daily raw → Supabase `raw_kcw` |
 | **HQ** | [`worker_tasks/run_hq_pomas_podet_sync.bat`](worker_tasks/run_hq_pomas_podet_sync.bat) | POMAS/PODET only → Drive + Supabase `raw_hq_*` |
 | **HQ** | [`worker_tasks/run_hq_iclow_sync.bat`](worker_tasks/run_hq_iclow_sync.bat) | ICLOW only → Drive + Supabase `raw_hq_iclow_stock_orders` |
-| **HQ** | [`worker_tasks/run_hq_po_related_sync.bat`](worker_tasks/run_hq_po_related_sync.bat) | POMAS/PODET + ICLOW (HQ) → Drive + Supabase, then inventory on-hand qty |
-| **HQ** | [`worker_tasks/run_hq_simas_sidet_sync.bat`](worker_tasks/run_hq_simas_sidet_sync.bat) | SIDET/SIMAS (HQ only) → Drive + Supabase `raw_kcw` (latest 6 months) |
+| **HQ** | [`worker_tasks/run_hq_po_related_sync.bat`](worker_tasks/run_hq_po_related_sync.bat) | POMAS/PODET + ICLOW + SIDET/SIMAS (HQ, 6 months) → Drive + Supabase, then inventory |
+| **HQ** | [`worker_tasks/run_hq_simas_sidet_sync.bat`](worker_tasks/run_hq_simas_sidet_sync.bat) | SIDET/SIMAS only (HQ) → Drive + Supabase `raw_kcw` (latest 6 months) |
 | **SYP** | [`worker_tasks/run_syp_po_related_sync.bat`](worker_tasks/run_syp_po_related_sync.bat) | POMAS/PODET + ICLOW (SYP) → Drive + Supabase, then inventory on-hand qty |
 | **HQ B** | [`worker_tasks/run_hq_parts9_full_pipeline.bat`](worker_tasks/run_hq_parts9_full_pipeline.bat) | HQ A + archive + curated + VAT/TAR + Excel + upload |
 | **HQ** | [`worker_tasks/run_bank_statement_import.bat`](worker_tasks/run_bank_statement_import.bat) | Drive `01_raw/statement` (KBANK+KTB) → Supabase `bank.statement_*` |
@@ -78,9 +78,9 @@ python -m src.kcw.pipeline tar --reprocess 2026-07-20
 
 `sync-iclow --site {hq|syp}` extracts that site's `ICLOW` (stock-order / ค้างรับ tracker) to Drive, then uploads to `raw_kcw.raw_{site}_iclow_stock_orders`. See [`docs/parts9_pending_receive.md`](docs/parts9_pending_receive.md).
 
-`sync-po-related --site {hq|syp}` extracts `POMAS`/`PODET` + `ICLOW` for that site only (HQ and SYP must run on separate machines). Worker BATs [`run_hq_po_related_sync.bat`](worker_tasks/run_hq_po_related_sync.bat) / [`run_syp_po_related_sync.bat`](worker_tasks/run_syp_po_related_sync.bat) also run inventory on-hand qty afterward via [`run_inventory_sync.bat`](worker_tasks/run_inventory_sync.bat) → `curated_kcw.inventory_qty_latest` (not ICMAS raw).
+`sync-po-related --site {hq|syp}` extracts `POMAS`/`PODET` + `ICLOW` for that site only (HQ and SYP must run on separate machines). For **HQ**, it also syncs `SIDET`/`SIMAS` to `raw_kcw` (latest 6 months). Worker BAT [`run_hq_po_related_sync.bat`](worker_tasks/run_hq_po_related_sync.bat) runs this single trigger then inventory on-hand qty via [`run_inventory_sync.bat`](worker_tasks/run_inventory_sync.bat) → `curated_kcw.inventory_qty_latest`. SYP BAT [`run_syp_po_related_sync.bat`](worker_tasks/run_syp_po_related_sync.bat) does PO/ICLOW + inventory only (no sales Supabase upload).
 
-`sync-simas-sidet` extracts HQ `SIDET`/`SIMAS` to Drive, then uploads the latest **6 months** (from max `BILLDATE`) into `raw_kcw.raw_hq_sidet_sales_lines` and `raw_kcw.raw_hq_simas_sales_bills`. HQ-only — SYP sales remain on Drive for curated notebooks. Also included in `upload-daily-raw` after HQ A extract.
+`sync-simas-sidet` is a focused alias for HQ sales only (same 6-month upload). Also included in `upload-daily-raw` after HQ A extract.
 
 `upload-daily-raw` (HQ A after extract) replaces these `raw_kcw` tables via staging from Drive CSVs:
 
