@@ -30,6 +30,10 @@ TABLE_SPECS = {
     "ICLOW": {"years": None, "suffix": "iclow_stock_orders"},
     "PVMAS": {"years": None, "suffix": "pvmas_notes_vouchers"},
     "RVMAS": {"years": None, "suffix": "rvmas_notes_vouchers"},
+    # Cheque / transfer registers (ทะเบียนเช็ครับ / เช็คจ่าย). CHKNO is either a
+    # cheque number or a method label (โอน, KSHOP, จ่ายสด, …).
+    "BRDET": {"years": None, "suffix": "brdet_cheques_received"},
+    "BPDET": {"years": None, "suffix": "bpdet_cheques_paid"},
 }
 
 # SYP rolling windows. Purchase invoices (PIMAS/PIDET) are HQ-only in daily extract.
@@ -60,6 +64,9 @@ PO_RELATED_TABLES = ("PODET", "POMAS", "ICLOW")
 
 # Focused sales sync (HQ only for Supabase raw upload).
 SI_TABLES = ("SIDET", "SIMAS")
+
+# Focused cheque/transfer register sync (HQ only — bank receive/pay detail).
+CHEQUE_TABLES = ("BRDET", "BPDET")
 
 def site_env_prefix(site: str) -> str:
     site = site.lower()
