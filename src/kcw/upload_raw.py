@@ -102,6 +102,21 @@ PVMAS_UPLOADS = (
     },
 )
 
+# Cheque / transfer registers (ทะเบียนเช็ครับ / เช็คจ่าย): HQ only.
+# CHKNO is either a cheque number or a method label (โอน, KSHOP, จ่ายสด, …).
+BRDET_BPDET_UPLOADS = (
+    {
+        "csv_name": "raw_hq_brdet_cheques_received.csv",
+        "main_table": "raw_kcw.raw_hq_brdet_cheques_received",
+        "staging_table": "raw_kcw.raw_hq_brdet_cheques_received_stg",
+    },
+    {
+        "csv_name": "raw_hq_bpdet_cheques_paid.csv",
+        "main_table": "raw_kcw.raw_hq_bpdet_cheques_paid",
+        "staging_table": "raw_kcw.raw_hq_bpdet_cheques_paid_stg",
+    },
+)
+
 # Stock-order / pending-receive tracker: HQ + SYP (ICLOW; ค้างรับ = ORDERED=Y RECEIVED=N).
 ICLOW_UPLOADS = (
     {
@@ -144,6 +159,7 @@ DAILY_RAW_UPLOADS = (
     + ICMAS_UPLOADS
     + RVMAS_UPLOADS
     + PVMAS_UPLOADS
+    + BRDET_BPDET_UPLOADS
     + ICLOW_UPLOADS
     + SIMAS_SIDET_UPLOADS
 )
@@ -466,6 +482,26 @@ def upload_simas_sidet(
     )
 
 
+def upload_brdet_bpdet(
+    *,
+    raw_folder: Optional[Path] = None,
+    db_url: Optional[str] = None,
+) -> list[dict]:
+    """
+    Upload HQ BRDET/BPDET Drive CSVs to raw_kcw (cheque / transfer registers).
+
+    BRDET = ทะเบียนเช็ครับ (inbound). BPDET = ทะเบียนเช็คจ่าย (outbound).
+    CHKNO is either a cheque number or a method label (โอน, KSHOP, จ่ายสด, …).
+    HQ only.
+    """
+    return upload_raw_specs(
+        BRDET_BPDET_UPLOADS,
+        raw_folder=raw_folder,
+        db_url=db_url,
+        label="brdet/bpdet-hq",
+    )
+
+
 def upload_daily_raw(
     *,
     raw_folder: Optional[Path] = None,
@@ -480,6 +516,7 @@ def upload_daily_raw(
       - HQ + SYP ICMAS (product masters)
       - HQ RVMAS (receipt / notes vouchers; includes RC*)
       - HQ PVMAS (payment / notes vouchers; includes P* / KCPN*)
+      - HQ BRDET / BPDET (cheque / transfer registers; ทะเบียนเช็ครับ/จ่าย)
       - HQ + SYP ICLOW (stock-order / pending-receive tracker)
       - HQ SIMAS / SIDET (sales bills + lines; latest 6 months only)
     """

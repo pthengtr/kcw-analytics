@@ -58,7 +58,7 @@ def cmd_upload_armas_apmas(_args: argparse.Namespace) -> int:
 
 
 def cmd_upload_daily_raw(_args: argparse.Namespace) -> int:
-    """After SYP+HQ extracts: masters + POs + invoices + ICMAS + RVMAS + PVMAS."""
+    """After SYP+HQ extracts: masters + POs + invoices + ICMAS + RVMAS + PVMAS + BRDET/BPDET."""
     from src.kcw.upload_raw import upload_daily_raw
 
     upload_daily_raw()
@@ -154,6 +154,26 @@ def cmd_sync_simas_sidet(_args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_upload_brdet_bpdet(_args: argparse.Namespace) -> int:
+    """Drive raw_hq_brdet/bpdet CSVs -> raw_kcw (HQ only)."""
+    from src.kcw.upload_raw import upload_brdet_bpdet
+
+    upload_brdet_bpdet()
+    return 0
+
+
+def cmd_sync_brdet_bpdet(_args: argparse.Namespace) -> int:
+    """Extract HQ BRDET/BPDET (cheque/transfer registers), then upload to raw_kcw."""
+    from src.kcw.extract_parts9 import CHEQUE_TABLES, extract_tables
+    from src.kcw.upload_raw import upload_brdet_bpdet
+
+    print(f"[sync-brdet-bpdet] site=hq tables={','.join(CHEQUE_TABLES)}")
+    extract_tables("hq", tables=CHEQUE_TABLES)
+    upload_brdet_bpdet()
+    print("[sync-brdet-bpdet] DONE site=hq")
+    return 0
+
+
 def cmd_tar(args: argparse.Namespace) -> int:
     from src.kcw.tar import delete_fin_for_day, run_bill_generation_for_day, run_catchup
     from src.kcw.tar import load_raw_csvs, prepare_eligible_frames, supabase_db_url
@@ -227,7 +247,8 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Drive daily raw CSVs -> raw_kcw: armas/apmas, "
             "pomas/podet (hq+syp), pimas/pidet (hq), icmas (hq+syp), "
-            "rvmas/pvmas (hq), iclow (hq+syp), simas/sidet (hq, 6 months)"
+            "rvmas/pvmas (hq), brdet/bpdet (hq), iclow (hq+syp), "
+            "simas/sidet (hq, 6 months)"
         ),
     )
     ud.set_defaults(func=cmd_upload_daily_raw)
@@ -305,6 +326,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Extract HQ SIDET/SIMAS then upload latest 6 months to raw_kcw",
     )
     ssi.set_defaults(func=cmd_sync_simas_sidet)
+
+    ubc = sub.add_parser(
+        "upload-brdet-bpdet",
+        help="Drive raw_hq_brdet/bpdet CSVs -> raw_kcw (HQ cheque/transfer registers)",
+    )
+    ubc.set_defaults(func=cmd_upload_brdet_bpdet)
+
+    sbc = sub.add_parser(
+        "sync-brdet-bpdet",
+        help=(
+            "Extract HQ BRDET/BPDET (ทะเบียนเช็ครับ/จ่าย) then upload to raw_kcw. "
+            "CHKNO is either a cheque number or a method label (โอน, KSHOP, …)."
+        ),
+    )
+    sbc.set_defaults(func=cmd_sync_brdet_bpdet)
 
     t = sub.add_parser("tar", help="TAR/3TAR/CNTAR catch-up or single day")
     t.add_argument("--catch-up", action="store_true", help="Process all missing days (default if no --date)")
