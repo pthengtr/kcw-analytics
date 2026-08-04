@@ -34,6 +34,7 @@ Local SQL Server is the only thing that must stay on the shop PCs. Everything af
 | **SYP** | [`worker_tasks/run_syp_po_related_sync.bat`](worker_tasks/run_syp_po_related_sync.bat) | POMAS/PODET + ICLOW (SYP) → Drive + Supabase, then inventory on-hand qty |
 | **HQ B** | [`worker_tasks/run_hq_parts9_full_pipeline.bat`](worker_tasks/run_hq_parts9_full_pipeline.bat) | HQ A + archive + curated + VAT/TAR + Excel + upload |
 | **HQ** | [`worker_tasks/run_bank_statement_import.bat`](worker_tasks/run_bank_statement_import.bat) | Daily bank sync: BRDET/BPDET + Drive `01_raw/statement` (KBANK+KTB) → `bank.statement_*` |
+| — | Edge Function `import-bank-statement` | Web upload path (kcw-v2) → parse → `bank.statement_*` + Storage `bank-statements` — see [`docs/bank_statement_upload.md`](docs/bank_statement_upload.md) |
 
 Schedule **SYP before HQ A/B** (e.g. SYP 06:00, HQ 06:30) so both site raw files exist (HQ uploads SYP POs from Drive).
 
