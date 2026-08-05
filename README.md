@@ -124,7 +124,7 @@ python -m src.kcw.pipeline bank-statement-report --fixture-sample
 | `00_` / `_archive/` / `_playground` | Scratch — do not schedule |
 | `02_` | Bank statement import ([`02_bank_statement_import_test.ipynb`](notebooks/02_bank_statement_import_test.ipynb)) |
 | `20–21_` | Tax / TAR ops |
-| `30–34_` | Monthly accounting |
+| `30–34_` | Monthly accounting (VAT Excel — see [`docs/vat_sales_purchase_reports.md`](docs/vat_sales_purchase_reports.md)) |
 | `50–51_` | Extract / curated (`51_syp_*` thin wrapper; HQ `51_parts9_to_drive`) |
 | `70_` | Online channels |
 | `90_` | Loaders |
