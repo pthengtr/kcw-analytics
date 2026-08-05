@@ -93,6 +93,64 @@ RVMAS_UPLOADS = (
     },
 )
 
+# Payment / notes vouchers: HQ only (includes P* and KCPN* payment vouchers).
+PVMAS_UPLOADS = (
+    {
+        "csv_name": "raw_hq_pvmas_notes_vouchers.csv",
+        "main_table": "raw_kcw.raw_hq_pvmas_notes_vouchers",
+        "staging_table": "raw_kcw.raw_hq_pvmas_notes_vouchers_stg",
+    },
+)
+
+# Cheque / transfer registers (ทะเบียนเช็ครับ / เช็คจ่าย): HQ only.
+# CHKNO is either a cheque number or a method label (โอน, KSHOP, จ่ายสด, …).
+BRDET_BPDET_UPLOADS = (
+    {
+        "csv_name": "raw_hq_brdet_cheques_received.csv",
+        "main_table": "raw_kcw.raw_hq_brdet_cheques_received",
+        "staging_table": "raw_kcw.raw_hq_brdet_cheques_received_stg",
+    },
+    {
+        "csv_name": "raw_hq_bpdet_cheques_paid.csv",
+        "main_table": "raw_kcw.raw_hq_bpdet_cheques_paid",
+        "staging_table": "raw_kcw.raw_hq_bpdet_cheques_paid_stg",
+    },
+)
+
+# Stock-order / pending-receive tracker: HQ + SYP (ICLOW; ค้างรับ = ORDERED=Y RECEIVED=N).
+ICLOW_UPLOADS = (
+    {
+        "csv_name": "raw_hq_iclow_stock_orders.csv",
+        "main_table": "raw_kcw.raw_hq_iclow_stock_orders",
+        "staging_table": "raw_kcw.raw_hq_iclow_stock_orders_stg",
+        "site": "hq",
+    },
+    {
+        "csv_name": "raw_syp_iclow_stock_orders.csv",
+        "main_table": "raw_kcw.raw_syp_iclow_stock_orders",
+        "staging_table": "raw_kcw.raw_syp_iclow_stock_orders_stg",
+        "site": "syp",
+    },
+)
+
+# Sales invoices / lines: HQ only. Supabase raw keeps the latest 6 months from max BILLDATE.
+SIMAS_SIDET_UPLOADS = (
+    {
+        "csv_name": "raw_hq_sidet_sales_lines.csv",
+        "main_table": "raw_kcw.raw_hq_sidet_sales_lines",
+        "staging_table": "raw_kcw.raw_hq_sidet_sales_lines_stg",
+        "date_col": "BILLDATE",
+        "months": 6,
+    },
+    {
+        "csv_name": "raw_hq_simas_sales_bills.csv",
+        "main_table": "raw_kcw.raw_hq_simas_sales_bills",
+        "staging_table": "raw_kcw.raw_hq_simas_sales_bills_stg",
+        "date_col": "BILLDATE",
+        "months": 6,
+    },
+)
+
 # Daily HQ A upload set (run after SYP + HQ extracts land on Drive).
 DAILY_RAW_UPLOADS = (
     ARMAS_APMAS_UPLOADS
@@ -100,7 +158,38 @@ DAILY_RAW_UPLOADS = (
     + PIMAS_PIDET_UPLOADS
     + ICMAS_UPLOADS
     + RVMAS_UPLOADS
+    + PVMAS_UPLOADS
+    + BRDET_BPDET_UPLOADS
+    + ICLOW_UPLOADS
+    + SIMAS_SIDET_UPLOADS
 )
+
+
+def _table_data_columns(conn, table: str) -> set[str]:
+    schema, name = table.split(".", 1) if "." in table else ("public", table)
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select column_name
+            from information_schema.columns
+            where table_schema = %s
+              and table_name = %s
+              and column_name not in ('_ingested_at', '_source_file')
+            """,
+            (schema, name),
+        )
+        return {row[0] for row in cur.fetchall()}
+
+
+def _validate_df_table_columns(conn, df: pd.DataFrame, main_table: str) -> None:
+    table_cols = _table_data_columns(conn, main_table)
+    df_cols = {str(c) for c in df.columns}
+    missing_in_table = sorted(df_cols - table_cols)
+    if missing_in_table:
+        raise ValueError(
+            f"CSV columns missing from {main_table}: {missing_in_table}. "
+            "Apply the latest Supabase migration or fix the table DDL."
+        )
 
 
 def refresh_table_via_staging_df(
@@ -148,6 +237,7 @@ def refresh_table_via_staging_df(
             (like {main_table} including all)
             """
         )
+        _validate_df_table_columns(conn, load_df, main_table)
         cur.execute(f"delete from {staging_table}")
 
         with cur.copy(copy_sql) as copy:
@@ -214,6 +304,29 @@ def _read_raw_csv(path: Path) -> pd.DataFrame:
     return pd.read_csv(path, dtype="string", encoding="utf-8-sig", low_memory=False)
 
 
+def _maybe_filter_upload_df(df: pd.DataFrame, spec: dict) -> pd.DataFrame:
+    months = spec.get("months")
+    years = spec.get("years")
+    if months is None and years is None:
+        return df
+
+    from src.kcw.supabase_utils import filter_last_months_from_latest, filter_last_year_from_latest
+
+    date_col = spec.get("date_col", "BILLDATE")
+    before = len(df)
+    if months is not None:
+        df = filter_last_months_from_latest(df, date_col, months=int(months))
+        label = f"{months}m"
+    else:
+        df = filter_last_year_from_latest(df, date_col, years=int(years))
+        label = f"{years}y"
+    print(
+        f"[upload-raw] filtered {spec['csv_name']} to last {label} "
+        f"from latest {date_col}: {before:,} -> {len(df):,} rows"
+    )
+    return df
+
+
 def upload_raw_specs(
     specs: tuple[dict, ...],
     *,
@@ -234,6 +347,7 @@ def upload_raw_specs(
             csv_path = raw / spec["csv_name"]
             print(f"[upload-raw] reading {csv_path.name} ...")
             df = _read_raw_csv(csv_path)
+            df = _maybe_filter_upload_df(df, spec)
             print(f"[upload-raw] {csv_path.name} rows={len(df):,} cols={len(df.columns)}")
             result = refresh_table_via_staging_df(
                 conn=conn,
@@ -298,6 +412,96 @@ def upload_pomas_podet(
     )
 
 
+def upload_iclow(
+    site: str | None = None,
+    *,
+    raw_folder: Optional[Path] = None,
+    db_url: Optional[str] = None,
+) -> list[dict]:
+    """
+    Upload ICLOW Drive CSVs to raw_kcw.
+
+    site=None -> both HQ and SYP
+    site='hq'|'syp' -> that site only
+
+    Pending receive (ค้างรับ): ORDERED='Y' AND RECEIVED='N' AND CANCELED='N'.
+    """
+    if site is None:
+        specs = ICLOW_UPLOADS
+        label = "iclow"
+    else:
+        site = site.lower()
+        if site not in ("hq", "syp"):
+            raise ValueError("site must be 'hq', 'syp', or None")
+        specs = tuple(s for s in ICLOW_UPLOADS if s["site"] == site)
+        label = f"iclow-{site}"
+    return upload_raw_specs(
+        specs,
+        raw_folder=raw_folder,
+        db_url=db_url,
+        label=label,
+    )
+
+
+def upload_po_related(
+    site: str | None = None,
+    *,
+    raw_folder: Optional[Path] = None,
+    db_url: Optional[str] = None,
+) -> list[dict]:
+    """
+    Upload PO-related Drive CSVs to raw_kcw: POMAS/PODET + ICLOW.
+
+    site=None -> both HQ and SYP
+    site='hq'|'syp' -> that site only
+
+    Note: on-hand inventory qty (curated_kcw.inventory_qty_latest) is not
+    part of this upload — use run_inventory_sync.bat / notebook 50.
+    """
+    results: list[dict] = []
+    results.extend(upload_pomas_podet(site, raw_folder=raw_folder, db_url=db_url))
+    results.extend(upload_iclow(site, raw_folder=raw_folder, db_url=db_url))
+    return results
+
+
+def upload_simas_sidet(
+    *,
+    raw_folder: Optional[Path] = None,
+    db_url: Optional[str] = None,
+) -> list[dict]:
+    """
+    Upload HQ SIMAS/SIDET Drive CSVs to raw_kcw (latest 6 months from max BILLDATE).
+
+    HQ only — SYP sales stay on Drive for curated notebooks; Supabase raw is HQ-only.
+    """
+    return upload_raw_specs(
+        SIMAS_SIDET_UPLOADS,
+        raw_folder=raw_folder,
+        db_url=db_url,
+        label="simas/sidet-hq",
+    )
+
+
+def upload_brdet_bpdet(
+    *,
+    raw_folder: Optional[Path] = None,
+    db_url: Optional[str] = None,
+) -> list[dict]:
+    """
+    Upload HQ BRDET/BPDET Drive CSVs to raw_kcw (cheque / transfer registers).
+
+    BRDET = ทะเบียนเช็ครับ (inbound). BPDET = ทะเบียนเช็คจ่าย (outbound).
+    CHKNO is either a cheque number or a method label (โอน, KSHOP, จ่ายสด, …).
+    HQ only.
+    """
+    return upload_raw_specs(
+        BRDET_BPDET_UPLOADS,
+        raw_folder=raw_folder,
+        db_url=db_url,
+        label="brdet/bpdet-hq",
+    )
+
+
 def upload_daily_raw(
     *,
     raw_folder: Optional[Path] = None,
@@ -311,6 +515,10 @@ def upload_daily_raw(
       - HQ PIMAS / PIDET (purchase invoices; HQ only)
       - HQ + SYP ICMAS (product masters)
       - HQ RVMAS (receipt / notes vouchers; includes RC*)
+      - HQ PVMAS (payment / notes vouchers; includes P* / KCPN*)
+      - HQ BRDET / BPDET (cheque / transfer registers; ทะเบียนเช็ครับ/จ่าย)
+      - HQ + SYP ICLOW (stock-order / pending-receive tracker)
+      - HQ SIMAS / SIDET (sales bills + lines; latest 6 months only)
     """
     return upload_raw_specs(
         DAILY_RAW_UPLOADS,

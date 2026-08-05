@@ -58,7 +58,7 @@ def cmd_upload_armas_apmas(_args: argparse.Namespace) -> int:
 
 
 def cmd_upload_daily_raw(_args: argparse.Namespace) -> int:
-    """After SYP+HQ extracts: ARMAS/APMAS + POs + PIMAS/PIDET + ICMAS + RVMAS."""
+    """After SYP+HQ extracts: masters + POs + invoices + ICMAS + RVMAS + PVMAS + BRDET/BPDET."""
     from src.kcw.upload_raw import upload_daily_raw
 
     upload_daily_raw()
@@ -80,6 +80,97 @@ def cmd_sync_pomas_podet(args: argparse.Namespace) -> int:
 
     extract_tables(args.site, tables=PO_TABLES)
     upload_pomas_podet(args.site)
+    return 0
+
+
+def cmd_upload_iclow(args: argparse.Namespace) -> int:
+    """Drive raw_{site}_iclow_stock_orders.csv -> raw_kcw (one site or both)."""
+    from src.kcw.upload_raw import upload_iclow
+
+    upload_iclow(args.site)
+    return 0
+
+
+def cmd_sync_iclow(args: argparse.Namespace) -> int:
+    """Extract ICLOW for a site, then upload that site to Supabase."""
+    from src.kcw.extract_parts9 import ICLOW_TABLES, extract_tables
+    from src.kcw.upload_raw import upload_iclow
+
+    extract_tables(args.site, tables=ICLOW_TABLES)
+    upload_iclow(args.site)
+    return 0
+
+
+def cmd_upload_po_related(args: argparse.Namespace) -> int:
+    """Drive PO/ICLOW CSVs -> raw_kcw (one site or both)."""
+    from src.kcw.upload_raw import upload_po_related
+
+    upload_po_related(args.site)
+    return 0
+
+
+def cmd_sync_po_related(args: argparse.Namespace) -> int:
+    """
+    Extract POMAS/PODET + ICLOW for one site, then upload to Supabase.
+
+    HQ also extracts SIDET/SIMAS and uploads latest 6 months to raw_kcw (HQ-only).
+    SYP runs separately (different PARTS9 servers / machines).
+    Inventory on-hand qty is separate (run_inventory_sync.bat / notebook 50).
+    """
+    from src.kcw.extract_parts9 import PO_RELATED_TABLES, SI_TABLES, extract_tables
+    from src.kcw.upload_raw import upload_po_related, upload_simas_sidet
+
+    site = args.site
+    print(f"[sync-po-related] site={site} tables={','.join(PO_RELATED_TABLES)}")
+    extract_tables(site, tables=PO_RELATED_TABLES)
+    upload_po_related(site)
+
+    if site == "hq":
+        print(f"[sync-po-related] site=hq sales tables={','.join(SI_TABLES)} (6 months)")
+        extract_tables("hq", tables=SI_TABLES)
+        upload_simas_sidet()
+
+    print(f"[sync-po-related] DONE site={site}")
+    return 0
+
+
+def cmd_upload_simas_sidet(_args: argparse.Namespace) -> int:
+    """Drive raw_hq_simas/sidet CSVs -> raw_kcw (HQ only, latest 6 months)."""
+    from src.kcw.upload_raw import upload_simas_sidet
+
+    upload_simas_sidet()
+    return 0
+
+
+def cmd_sync_simas_sidet(_args: argparse.Namespace) -> int:
+    """Extract HQ SIDET/SIMAS, then upload latest 6 months to raw_kcw."""
+    from src.kcw.extract_parts9 import SI_TABLES, extract_tables
+    from src.kcw.upload_raw import upload_simas_sidet
+
+    print(f"[sync-simas-sidet] site=hq tables={','.join(SI_TABLES)}")
+    extract_tables("hq", tables=SI_TABLES)
+    upload_simas_sidet()
+    print("[sync-simas-sidet] DONE site=hq")
+    return 0
+
+
+def cmd_upload_brdet_bpdet(_args: argparse.Namespace) -> int:
+    """Drive raw_hq_brdet/bpdet CSVs -> raw_kcw (HQ only)."""
+    from src.kcw.upload_raw import upload_brdet_bpdet
+
+    upload_brdet_bpdet()
+    return 0
+
+
+def cmd_sync_brdet_bpdet(_args: argparse.Namespace) -> int:
+    """Extract HQ BRDET/BPDET (cheque/transfer registers), then upload to raw_kcw."""
+    from src.kcw.extract_parts9 import CHEQUE_TABLES, extract_tables
+    from src.kcw.upload_raw import upload_brdet_bpdet
+
+    print(f"[sync-brdet-bpdet] site=hq tables={','.join(CHEQUE_TABLES)}")
+    extract_tables("hq", tables=CHEQUE_TABLES)
+    upload_brdet_bpdet()
+    print("[sync-brdet-bpdet] DONE site=hq")
     return 0
 
 
@@ -144,6 +235,12 @@ def cmd_bank_statement_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_backfill_statement_accounts(args: argparse.Namespace) -> int:
+    from src.kcw.backfill_statement_accounts import backfill
+
+    return backfill(apply=bool(args.apply))
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="python -m src.kcw.pipeline",
@@ -172,7 +269,9 @@ def build_parser() -> argparse.ArgumentParser:
         "upload-daily-raw",
         help=(
             "Drive daily raw CSVs -> raw_kcw: armas/apmas, "
-            "pomas/podet (hq+syp), pimas/pidet (hq), icmas (hq+syp), rvmas (hq)"
+            "pomas/podet (hq+syp), pimas/pidet (hq), icmas (hq+syp), "
+            "rvmas/pvmas (hq), brdet/bpdet (hq), iclow (hq+syp), "
+            "simas/sidet (hq, 6 months)"
         ),
     )
     ud.set_defaults(func=cmd_upload_daily_raw)
@@ -195,6 +294,76 @@ def build_parser() -> argparse.ArgumentParser:
     )
     spo.add_argument("--site", choices=("hq", "syp"), required=True)
     spo.set_defaults(func=cmd_sync_pomas_podet)
+
+    ui = sub.add_parser(
+        "upload-iclow",
+        help="Drive raw_{site}_iclow_stock_orders.csv -> raw_kcw (staging replace)",
+    )
+    ui.add_argument(
+        "--site",
+        choices=("hq", "syp"),
+        default=None,
+        help="Upload one site only (default: both)",
+    )
+    ui.set_defaults(func=cmd_upload_iclow)
+
+    si = sub.add_parser(
+        "sync-iclow",
+        help="Extract ICLOW for a site then upload that site to raw_kcw (pending-receive tracker)",
+    )
+    si.add_argument("--site", choices=("hq", "syp"), required=True)
+    si.set_defaults(func=cmd_sync_iclow)
+
+    upr = sub.add_parser(
+        "upload-po-related",
+        help="Drive POMAS/PODET + ICLOW CSVs -> raw_kcw (staging replace)",
+    )
+    upr.add_argument(
+        "--site",
+        choices=("hq", "syp"),
+        default=None,
+        help="Upload one site only (default: both)",
+    )
+    upr.set_defaults(func=cmd_upload_po_related)
+
+    spr = sub.add_parser(
+        "sync-po-related",
+        help=(
+            "Extract POMAS/PODET + ICLOW for one site then upload to raw_kcw. "
+            "HQ also syncs SIDET/SIMAS (latest 6 months). "
+            "HQ and SYP must run separately. "
+            "Does not update inventory_qty_latest — use run_inventory_sync.bat for that."
+        ),
+    )
+    spr.add_argument("--site", choices=("hq", "syp"), required=True)
+    spr.set_defaults(func=cmd_sync_po_related)
+
+    usi = sub.add_parser(
+        "upload-simas-sidet",
+        help="Drive raw_hq_simas/sidet CSVs -> raw_kcw (HQ only, latest 6 months)",
+    )
+    usi.set_defaults(func=cmd_upload_simas_sidet)
+
+    ssi = sub.add_parser(
+        "sync-simas-sidet",
+        help="Extract HQ SIDET/SIMAS then upload latest 6 months to raw_kcw",
+    )
+    ssi.set_defaults(func=cmd_sync_simas_sidet)
+
+    ubc = sub.add_parser(
+        "upload-brdet-bpdet",
+        help="Drive raw_hq_brdet/bpdet CSVs -> raw_kcw (HQ cheque/transfer registers)",
+    )
+    ubc.set_defaults(func=cmd_upload_brdet_bpdet)
+
+    sbc = sub.add_parser(
+        "sync-brdet-bpdet",
+        help=(
+            "Extract HQ BRDET/BPDET (ทะเบียนเช็ครับ/จ่าย) then upload to raw_kcw. "
+            "CHKNO is either a cheque number or a method label (โอน, KSHOP, …)."
+        ),
+    )
+    sbc.set_defaults(func=cmd_sync_brdet_bpdet)
 
     t = sub.add_parser("tar", help="TAR/3TAR/CNTAR catch-up or single day")
     t.add_argument("--catch-up", action="store_true", help="Process all missing days (default if no --date)")
@@ -228,6 +397,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="Write a synthetic layout sample (no DB/Drive); default under logs/",
     )
     bsr.set_defaults(func=cmd_bank_statement_report)
+
+    bsa = sub.add_parser(
+        "backfill-statement-accounts",
+        help=(
+            "Re-read statement Excel on Drive; update account_no + fingerprints "
+            "(HQ PC with Drive mounted; dry-run by default)"
+        ),
+    )
+    bsa.add_argument(
+        "--apply",
+        action="store_true",
+        help="Write updates to Supabase (default: dry-run only)",
+    )
+    bsa.set_defaults(func=cmd_backfill_statement_accounts)
 
     return p
 

@@ -8,6 +8,11 @@ REM   - HQ + SYP POMAS / PODET  (SYP CSVs must already be on Drive)
 REM   - HQ PIMAS / PIDET
 REM   - HQ + SYP ICMAS          (SYP CSV must already be on Drive)
 REM   - HQ RVMAS                (receipt / notes vouchers, incl. RC*)
+REM   - HQ PVMAS                (payment / notes vouchers, incl. P* / KCPN*)
+REM   - HQ BRDET / BPDET        (cheque / transfer registers; ทะเบียนเช็ครับ/จ่าย)
+REM   - HQ ICLOW                (stock-order / pending-receive tracker)
+REM   - SYP ICLOW               (must already be on Drive from SYP extract/sync)
+REM   - HQ SIMAS / SIDET        (sales bills + lines; latest 6 months to Supabase)
 REM Use this when post-raw pipeline runs elsewhere (Claude Cowork) or for raw refresh.
 
 cd /d "%~dp0.."
@@ -57,5 +62,5 @@ if %ERRORLEVEL% NEQ 0 (
 
 echo DONE: daily raw Supabase upload
 echo Check Drive timestamps for raw_hq_sidet_sales_lines.csv and raw_hq_icmas_products.csv
-echo Check Supabase raw_kcw POMAS/PODET ^(hq+syp^), PIMAS/PIDET ^(hq^), ICMAS ^(hq+syp^), RVMAS ^(hq^), ARMAS/APMAS
+echo Check Supabase raw_kcw POMAS/PODET ^(hq+syp^), PIMAS/PIDET ^(hq^), ICMAS ^(hq+syp^), RVMAS/PVMAS ^(hq^), BRDET/BPDET ^(hq^), ICLOW ^(hq+syp^), ARMAS/APMAS, SIMAS/SIDET ^(hq, 6 months^)
 exit /b 0

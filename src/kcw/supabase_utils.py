@@ -5,6 +5,45 @@ import pandas as pd
 import numpy as np
 
 
+def _filter_from_latest(
+    df: pd.DataFrame,
+    date_col: str,
+    *,
+    years: int | None = None,
+    months: int | None = None,
+    keep_invalid: bool = False,
+    inplace: bool = False,
+) -> pd.DataFrame:
+    if date_col not in df.columns:
+        raise KeyError(f"Column not found: {date_col}")
+    if (years is None) == (months is None):
+        raise ValueError("Specify exactly one of years or months")
+
+    out = df if inplace else df.copy()
+
+    # Parse to datetime safely. Use mixed formats: HQ curated dates are often
+    # 'YYYY-MM-DD HH:MM:SS' while SYP raw/csv dates are 'YYYY-MM-D'. Default
+    # inference can lock onto the first format and turn the other into NaT.
+    dt = pd.to_datetime(out[date_col], errors="coerce", format="mixed")
+
+    latest = dt.max()
+    if pd.isna(latest):
+        return out if keep_invalid else out.iloc[0:0].copy()
+
+    if months is not None:
+        cutoff = latest - pd.DateOffset(months=int(months))
+    else:
+        cutoff = latest - pd.DateOffset(years=int(years))
+
+    mask_recent = dt >= cutoff
+    if keep_invalid:
+        mask = mask_recent | dt.isna()
+    else:
+        mask = mask_recent
+
+    return out.loc[mask].copy()
+
+
 def filter_last_year_from_latest(
     df: pd.DataFrame,
     date_col: str = "BILLDATE",
@@ -22,30 +61,35 @@ def filter_last_year_from_latest(
 
     Returns a filtered copy unless inplace=True (then returns the same df reference).
     """
-    if date_col not in df.columns:
-        raise KeyError(f"Column not found: {date_col}")
+    return _filter_from_latest(
+        df,
+        date_col,
+        years=years,
+        keep_invalid=keep_invalid,
+        inplace=inplace,
+    )
 
-    out = df if inplace else df.copy()
 
-    # Parse to datetime safely. Use mixed formats: HQ curated dates are often
-    # 'YYYY-MM-DD HH:MM:SS' while SYP raw/csv dates are 'YYYY-MM-D'. Default
-    # inference can lock onto the first format and turn the other into NaT.
-    dt = pd.to_datetime(out[date_col], errors="coerce", format="mixed")
+def filter_last_months_from_latest(
+    df: pd.DataFrame,
+    date_col: str = "BILLDATE",
+    *,
+    months: int = 6,
+    keep_invalid: bool = False,
+    inplace: bool = False,
+) -> pd.DataFrame:
+    """
+    Keep rows where `date_col` is within `months` months back from the latest date.
 
-    latest = dt.max()
-    if pd.isna(latest):
-        # No valid dates at all
-        return out if keep_invalid else out.iloc[0:0].copy()
-
-    cutoff = latest - pd.DateOffset(years=years)
-
-    mask_recent = dt >= cutoff
-    if keep_invalid:
-        mask = mask_recent | dt.isna()
-    else:
-        mask = mask_recent
-
-    return out.loc[mask].copy()
+    Invalid dates are dropped unless keep_invalid=True.
+    """
+    return _filter_from_latest(
+        df,
+        date_col,
+        months=months,
+        keep_invalid=keep_invalid,
+        inplace=inplace,
+    )
 
 
 # Example usage:

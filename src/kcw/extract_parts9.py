@@ -27,8 +27,13 @@ TABLE_SPECS = {
     "ARMAS": {"years": None, "suffix": "armas_receivable"},
     "APMAS": {"years": None, "suffix": "apmas_payable"},
     "ICMAS": {"years": None, "suffix": "icmas_products"},
+    "ICLOW": {"years": None, "suffix": "iclow_stock_orders"},
     "PVMAS": {"years": None, "suffix": "pvmas_notes_vouchers"},
     "RVMAS": {"years": None, "suffix": "rvmas_notes_vouchers"},
+    # Cheque / transfer registers (ทะเบียนเช็ครับ / เช็คจ่าย). CHKNO is either a
+    # cheque number or a method label (โอน, KSHOP, จ่ายสด, …).
+    "BRDET": {"years": None, "suffix": "brdet_cheques_received"},
+    "BPDET": {"years": None, "suffix": "bpdet_cheques_paid"},
 }
 
 # SYP rolling windows. Purchase invoices (PIMAS/PIDET) are HQ-only in daily extract.
@@ -43,11 +48,25 @@ SITE_YEARS = {
     },
 }
 
-# Daily SYP extract: sales + products + POs. No PIMAS/PIDET (purchases happen at HQ).
-SYP_MINIMAL = ("PODET", "POMAS", "SIDET", "SIMAS", "ICMAS")
+# Daily SYP extract: sales + products + POs + ICLOW. No PIMAS/PIDET (purchases happen at HQ).
+SYP_MINIMAL = ("PODET", "POMAS", "SIDET", "SIMAS", "ICMAS", "ICLOW")
 
 # Focused PO sync (HQ/SYP worker tasks).
 PO_TABLES = ("PODET", "POMAS")
+
+# Focused ICLOW sync (HQ/SYP pending-receive / stock-order tracker).
+ICLOW_TABLES = ("ICLOW",)
+
+# One-shot PO-related extract: purchase orders + stock-order / pending-receive tracker.
+# Inventory on-hand qty (curated_kcw.inventory_qty_latest) is a separate step
+# (notebook 50 / run_inventory_sync.bat) — not ICMAS raw upload.
+PO_RELATED_TABLES = ("PODET", "POMAS", "ICLOW")
+
+# Focused sales sync (HQ only for Supabase raw upload).
+SI_TABLES = ("SIDET", "SIMAS")
+
+# Focused cheque/transfer register sync (HQ only — bank receive/pay detail).
+CHEQUE_TABLES = ("BRDET", "BPDET")
 
 def site_env_prefix(site: str) -> str:
     site = site.lower()
