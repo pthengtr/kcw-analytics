@@ -78,5 +78,14 @@ if %ERRORLEVEL% NEQ 0 (
 )
 
 echo DONE: %NBNAME%
+
+REM Regenerate monthly Excel so next-day operator uploads appear in the report.
+echo Running bank statement report after import...
+call "%~dp0run_bank_statement_report.bat"
+if %ERRORLEVEL% NEQ 0 (
+    echo FAILED: bank statement report after import
+    exit /b %ERRORLEVEL%
+)
+
 echo DONE: daily bank sync
 exit /b 0

@@ -212,6 +212,29 @@ def cmd_tar(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_bank_statement_report(args: argparse.Namespace) -> int:
+    """Monthly multi-account bank statement Excel (VAT-style layout)."""
+    from src.kcw.bank_statement_report import (
+        run_bank_statement_report,
+        write_fixture_sample,
+    )
+
+    if getattr(args, "fixture_sample", False):
+        out = write_fixture_sample(
+            Path(args.output) if getattr(args, "output", None) else None
+        )
+        print(f"fixture_sample={out}")
+        return 0
+
+    out = run_bank_statement_report(
+        year=args.year,
+        month=args.month,
+        out_path=Path(args.output) if getattr(args, "output", None) else None,
+    )
+    print(f"output={out}")
+    return 0
+
+
 def cmd_backfill_statement_accounts(args: argparse.Namespace) -> int:
     from src.kcw.backfill_statement_accounts import backfill
 
@@ -354,6 +377,26 @@ def build_parser() -> argparse.ArgumentParser:
         help="Delete fin_* for day then regenerate (explicit; does not rewind seq)",
     )
     t.set_defaults(func=cmd_tar)
+
+    bsr = sub.add_parser(
+        "bank-statement-report",
+        help=(
+            "Monthly bank statement Excel (one sheet per account) "
+            "under 04_outputs/04_Bank_Statement_Report"
+        ),
+    )
+    bsr.add_argument("--year", type=int, help="Override reporting year (default: Bangkok today-10d)")
+    bsr.add_argument("--month", type=int, help="Override reporting month 1-12")
+    bsr.add_argument(
+        "--output",
+        help="Optional output .xlsx path (default: Drive 04_outputs/04_Bank_Statement_Report/...)",
+    )
+    bsr.add_argument(
+        "--fixture-sample",
+        action="store_true",
+        help="Write a synthetic layout sample (no DB/Drive); default under logs/",
+    )
+    bsr.set_defaults(func=cmd_bank_statement_report)
 
     bsa = sub.add_parser(
         "backfill-statement-accounts",
