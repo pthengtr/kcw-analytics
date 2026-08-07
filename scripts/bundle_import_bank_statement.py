@@ -25,11 +25,14 @@ def main() -> None:
         ("export const PARSER_VERSION", "const PARSER_VERSION"),
         ("export type ParsedLine", "type ParsedLine"),
         ("export type ParseResult", "type ParseResult"),
+        ("export type TransactionFingerprintInput", "type TransactionFingerprintInput"),
         ("export async function sha256HexAsync", "async function sha256HexAsync"),
         ("export function normText", "function normText"),
         ("export function normMoney", "function normMoney"),
         ("export function parseDayFirstDate", "function parseDayFirstDate"),
         ("export function inferAccountFromFilename", "function inferAccountFromFilename"),
+        ("export function extractStableTransactionDetail", "function extractStableTransactionDetail"),
+        ("export async function buildTransactionFingerprint", "async function buildTransactionFingerprint"),
         ("export async function parseStatementBytes", "async function parseStatementBytes"),
     ]
     parser_local = parser

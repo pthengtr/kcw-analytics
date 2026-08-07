@@ -209,20 +209,47 @@ def compute_transaction_fingerprint(
     description: str | None,
     bank_reference: str | None,
     balance_after: Decimal | float | None,
+    raw_json: dict | None = None,
 ) -> str:
-    """Same fingerprint input as notebooks/02_bank_statement_import_test.ipynb."""
+    """Canonical transaction identity (parser_version auto_v2).
+
+  Identity: account, date, amount, direction, stable_detail, bank_reference, balance.
+  Display description is excluded — use stable detail from raw_json when available.
+    """
+    stable_detail = extract_stable_transaction_detail(raw_json or {})
+    if not stable_detail and description:
+        stable_detail = str(description).strip()
     fp_input = "|".join(
         [
             norm_text(account_no),
             norm_date(txn_date),
             norm_money(amount),
             norm_text(direction),
-            norm_text(description),
+            norm_text(stable_detail),
             norm_text(bank_reference),
             norm_money(balance_after) if balance_after is not None else "",
         ]
     )
     return sha256_text(fp_input)
+
+
+STABLE_DETAIL_KEYS = (
+    "รายละเอียด",
+    "DESCRIPTION",
+    "DETAIL",
+    "PARTICULAR",
+)
+
+
+def extract_stable_transaction_detail(raw: dict) -> str:
+    for key in STABLE_DETAIL_KEYS:
+        val = raw.get(key)
+        if val is None or (isinstance(val, float) and pd.isna(val)):
+            continue
+        s = str(val).strip()
+        if s:
+            return s
+    return ""
 
 
 def is_short_account_no(account_no: str | None) -> bool:
