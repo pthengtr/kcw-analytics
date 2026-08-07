@@ -88,7 +88,6 @@ function normText(x: unknown): string {
   return s
 }
 
-/** Format money like Python Decimal quantize(0.01, ROUND_HALF_UP). */
 /** Keys in raw_json that carry stable bank transaction detail (not display labels). */
 const STABLE_DETAIL_KEYS = [
   "รายละเอียด", // KBANK Thai export
