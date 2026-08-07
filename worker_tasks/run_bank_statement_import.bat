@@ -3,11 +3,12 @@ setlocal EnableExtensions EnableDelayedExpansion
 
 REM Daily bank sync:
 REM   1) PARTS9 BRDET/BPDET cheque+transfer registers -> Supabase raw_kcw
-REM   2) Drive bank statement Excel (KBANK + KTB) -> Supabase bank.statement_*
+REM   2) Drive bank statement Excel (KBANK + KTB) -> Edge Function import-bank-statement
 REM
 REM Focused cheque sync: worker_tasks/run_hq_brdet_bpdet_sync.bat
-REM Statement notebook: notebooks/02_bank_statement_import_test.ipynb
-REM Needs SUPABASE_DB_* in .env (loaded by the notebook via python-dotenv).
+REM Statement uploader: scripts/upload_drive_bank_statements.py
+REM Parser SoT: kcw-v2 supabase/functions/import-bank-statement (auto_v2)
+REM Needs SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY in .env (loaded by the Python script).
 
 cd /d "%~dp0.."
 
@@ -34,7 +35,7 @@ if not exist "%KCW_ANALYTICS_LOG_DIR%" (
 echo ==========================================
 echo Daily bank sync
 echo   1) HQ BRDET/BPDET cheque/transfer registers
-echo   2) Bank statement Excel import
+echo   2) Bank statement Drive -^> Edge Function upload
 echo Python: %KCW_ANALYTICS_PYTHON%
 echo Repo: %cd%
 echo ==========================================
@@ -47,37 +48,28 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b %ERRORLEVEL%
 )
 
-set "NBDIR=%cd%\notebooks"
-set "NBNAME=02_bank_statement_import_test.ipynb"
-set "NB=%NBDIR%\%NBNAME%"
-set "OUT=%KCW_ANALYTICS_LOG_DIR%\%NBNAME:.ipynb=.executed.ipynb%"
-set "LOG=%KCW_ANALYTICS_LOG_DIR%\%NBNAME:.ipynb=.log%"
+set "UPLOAD_SCRIPT=%cd%\scripts\upload_drive_bank_statements.py"
+set "LOG=%KCW_ANALYTICS_LOG_DIR%\upload_drive_bank_statements.log"
 
 echo.
-echo --- 2/2: bank statement import ---
-echo Notebook: %NB%
-echo Logs: %KCW_ANALYTICS_LOG_DIR%
+echo --- 2/2: bank statement Edge upload ---
+echo Script: %UPLOAD_SCRIPT%
+echo Logs: %LOG%
 
-if not exist "%NB%" (
-    echo FAILED: notebook not found
-    echo Notebook not found: "%NB%" > "%LOG%"
+if not exist "%UPLOAD_SCRIPT%" (
+    echo FAILED: uploader script not found
+    echo Uploader not found: "%UPLOAD_SCRIPT%" > "%LOG%"
     exit /b 1
 )
 
-"%KCW_ANALYTICS_PYTHON%" -m jupyter nbconvert ^
-    --to notebook ^
-    --execute ^
-    --ExecutePreprocessor.kernel_name=python3 ^
-    "%NB%" ^
-    --output "%OUT%" > "%LOG%" 2>&1
-
+"%KCW_ANALYTICS_PYTHON%" "%UPLOAD_SCRIPT%" > "%LOG%" 2>&1
 if %ERRORLEVEL% NEQ 0 (
-    echo FAILED: %NBNAME%
+    echo FAILED: upload_drive_bank_statements.py
     echo Check log: "%LOG%"
     exit /b %ERRORLEVEL%
 )
 
-echo DONE: %NBNAME%
+echo DONE: Drive statements uploaded via Edge Function
 
 REM Regenerate monthly Excel so next-day operator uploads appear in the report.
 echo Running bank statement report after import...
