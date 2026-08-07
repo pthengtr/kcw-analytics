@@ -88,7 +88,7 @@ def fetch_import_files(conn) -> list[dict]:
 def fetch_lines_for_file(conn, file_id: str) -> list[dict]:
     sql = """
     select id, account_no, txn_date, amount, direction, description,
-           bank_reference, balance_after, transaction_fingerprint
+           bank_reference, balance_after, transaction_fingerprint, raw_json
     from bank.statement_lines
     where source_file_id = %s
     """
@@ -106,6 +106,7 @@ def fetch_lines_for_file(conn, file_id: str) -> list[dict]:
             "bank_reference": r[6],
             "balance_after": r[7],
             "transaction_fingerprint": r[8],
+            "raw_json": r[9],
         }
         for r in rows
     ]
@@ -192,6 +193,7 @@ def backfill(apply: bool = False, verbose: bool = True) -> int:
                     description=line["description"],
                     bank_reference=line["bank_reference"],
                     balance_after=line["balance_after"],
+                    raw_json=line.get("raw_json") or {},
                 )
 
                 if new_fp == line["transaction_fingerprint"] and line_account == full_account:

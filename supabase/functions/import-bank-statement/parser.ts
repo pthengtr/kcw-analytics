@@ -1,10 +1,10 @@
 /**
  * Port of notebooks/02_bank_statement_import_test.ipynb + src/kcw/bank_statement.py
- * parser_version: auto_v1 (same fingerprints / column heuristics as the Python importer)
+ * parser_version: auto_v2 (stable transaction fingerprints across overlapping exports)
  */
 import * as XLSX from "npm:xlsx@0.18.5"
 
-export const PARSER_VERSION = "auto_v1"
+export const PARSER_VERSION = "auto_v2"
 
 const ACCOUNT_METADATA_LABELS = new Set([
   "ACCOUNT NO.",
@@ -74,7 +74,67 @@ export function normText(x: unknown): string {
   return s
 }
 
-/** Format money like Python Decimal quantize(0.01, ROUND_HALF_UP). */
+/** Keys in raw_json that carry stable bank transaction detail (not display labels). */
+const STABLE_DETAIL_KEYS = [
+  "รายละเอียด", // KBANK Thai export
+  "DESCRIPTION", // KTB / English exports
+  "DETAIL",
+  "PARTICULAR",
+] as const
+
+/**
+ * Extract stable transaction detail from parsed row cells.
+ * KBANK cumulative exports may put a time or item label in `description`; the
+ * underlying transfer detail (counterparty, reference text) lives here instead.
+ */
+export function extractStableTransactionDetail(
+  raw: Record<string, unknown>,
+): string {
+  for (const key of STABLE_DETAIL_KEYS) {
+    const val = raw[key]
+    if (!isBlank(val)) return String(val).trim()
+  }
+  return ""
+}
+
+export type TransactionFingerprintInput = {
+  accountNo: string
+  txnDate: string
+  amount: number | string
+  direction: "in" | "out"
+  /** Stable bank detail text (not the display description column). */
+  stableDetail: string | null
+  bankReference: string | null
+  balanceAfter: number | null
+  /** When false, balance is omitted from identity (sheet had no balance column). */
+  hasBalanceColumn?: boolean
+}
+
+/**
+ * Canonical transaction identity for duplicate detection across overlapping exports.
+ *
+ * Identity fields (in order):
+ *   account_no, txn_date, amount, direction, stable_detail, bank_reference, balance_after
+ *
+ * Display `description` is intentionally excluded — KBANK exports may show the same
+ * transfer as a time ("09:12:00") in one file and an item label ("รับโอนเงิน") in another.
+ * `balance_after` disambiguates legitimate same-day same-amount sequences.
+ */
+export async function buildTransactionFingerprint(
+  input: TransactionFingerprintInput,
+): Promise<string> {
+  const fpInput = [
+    normText(input.accountNo),
+    input.txnDate,
+    normMoney(input.amount),
+    normText(input.direction),
+    normText(input.stableDetail),
+    normText(input.bankReference),
+    input.hasBalanceColumn !== false ? normMoney(input.balanceAfter) : "",
+  ].join("|")
+  return sha256HexAsync(fpInput)
+}
+
 export function normMoney(x: unknown): string {
   if (isBlank(x)) return ""
   const cleaned = String(x).replace(/,/g, "").trim()
@@ -406,16 +466,17 @@ export async function parseStatementBytes(
         valueDate = parseDayFirstDate(row[iValueDate])
       }
 
-      const fpInput = [
-        normText(resolvedAccount),
+      const stableDetail = extractStableTransactionDetail(raw) || description || ""
+      const fp = await buildTransactionFingerprint({
+        accountNo: resolvedAccount,
         txnDate,
-        normMoney(amount),
-        normText(direction),
-        normText(description),
-        normText(bankReference),
-        colBalance ? normMoney(bal) : "",
-      ].join("|")
-      const fp = await sha256HexAsync(fpInput)
+        amount,
+        direction,
+        stableDetail,
+        bankReference,
+        balanceAfter: bal,
+        hasBalanceColumn: Boolean(colBalance),
+      })
 
       lines.push({
         account_no: resolvedAccount,

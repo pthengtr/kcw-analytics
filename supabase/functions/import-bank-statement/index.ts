@@ -6,8 +6,8 @@
  *   - file: .xlsx / .xls / .xlsm
  *   - bank_name: KBANK | KTB (required)
  *
- * Same parse heuristics / fingerprints as notebooks/02_bank_statement_import_test.ipynb
- * (parser_version auto_v1).
+ * Same parse heuristics as notebooks/02_bank_statement_import_test.ipynb
+ * (parser_version auto_v2 — stable transaction fingerprints).
  */
 import { createClient } from "npm:@supabase/supabase-js@2"
 import { corsHeaders } from "./cors.ts"

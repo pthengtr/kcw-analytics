@@ -69,7 +69,7 @@ Do **not** set `Content-Type` manually when using `FormData` — the browser/SDK
 ## Behavior (parity with Drive notebook)
 
 1. SHA-256 the file bytes → `bank.statement_import_files.file_hash` (dedupe).
-2. Parse sheets with the same header / column / account-metadata heuristics as `notebooks/02_bank_statement_import_test.ipynb` (`parser_version: auto_v1`).
+2. Parse sheets with the same header / column / account-metadata heuristics as `notebooks/02_bank_statement_import_test.ipynb` (`parser_version: auto_v2`).
 3. Insert lines into `bank.statement_lines` with `ON CONFLICT (transaction_fingerprint) DO NOTHING`.
 4. Store the raw Excel in private Storage bucket `bank-statements` (path `KBANK|KTB/YYYY/MM/{hash16}_{filename}`).
 5. `source_path` is `storage://bank-statements/...` instead of a Drive `G:\...` path.
