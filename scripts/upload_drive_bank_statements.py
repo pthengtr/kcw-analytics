@@ -30,6 +30,15 @@ BANK_FOLDERS = ("KBANK", "KTB")
 STATEMENT_EXTENSIONS = {".xlsx", ".xls", ".xlsm"}
 
 
+def _safe_print(msg: str = "", *, flush: bool = False) -> None:
+    """Print without crashing on Windows cp874 / non-UTF8 consoles."""
+    try:
+        print(msg, flush=flush)
+    except UnicodeEncodeError:
+        enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+        print(msg.encode(enc, errors="replace").decode(enc, errors="replace"), flush=flush)
+
+
 def load_env() -> None:
     load_dotenv(REPO_ROOT / ".env")
     load_dotenv()
@@ -40,7 +49,7 @@ def list_statement_files(base_dir: Path) -> list[tuple[str, Path]]:
     for bank in BANK_FOLDERS:
         folder = base_dir / bank
         if not folder.is_dir():
-            print(f"WARNING: folder not found: {folder}")
+            _safe_print(f"WARNING: folder not found: {folder}")
             continue
         for path in sorted(folder.iterdir()):
             if path.name.startswith("~$"):
@@ -95,6 +104,13 @@ def upload_one(
 
 
 def main(argv: list[str] | None = None) -> int:
+    # HQ Windows workers often use cp874; avoid UnicodeEncodeError on arrows/Thai.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
     load_env()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -121,18 +137,15 @@ def main(argv: list[str] | None = None) -> int:
     supabase_url = (os.getenv("SUPABASE_URL") or "").rstrip("/")
     service_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or ""
     if not args.dry_run and (not supabase_url or not service_key):
-        print(
-            "ERROR: Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in .env",
-            file=sys.stderr,
-        )
+        _safe_print("ERROR: Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in .env")
         return 2
 
     files = list_statement_files(args.base_dir)
-    print(f"base_dir={args.base_dir}")
-    print(f"files={len(files)}")
+    _safe_print(f"base_dir={args.base_dir}")
+    _safe_print(f"files={len(files)}")
     if args.dry_run:
         for bank, path in files:
-            print(f"  {bank}\t{path.name}")
+            _safe_print(f"  {bank}\t{path.name}")
         return 0
 
     fn_url = f"{supabase_url}/functions/v1/import-bank-statement"
@@ -140,7 +153,7 @@ def main(argv: list[str] | None = None) -> int:
     session = requests.Session()
 
     for bank, path in files:
-        print(f"→ {bank} {path.name} ...", flush=True)
+        _safe_print(f"> {bank} {path.name} ...", flush=True)
         try:
             body = upload_one(
                 session=session,
@@ -152,14 +165,16 @@ def main(argv: list[str] | None = None) -> int:
             )
         except Exception as exc:
             counts["failed"] += 1
-            print(f"  FAILED transport: {exc}")
+            _safe_print(f"  FAILED transport: {exc}")
             continue
 
         status = str(body.get("status") or "")
         http = body.get("_http_status")
         if http and int(http) >= 400:
             counts["failed"] += 1
-            print(f"  FAILED http={http}: {json.dumps(body, ensure_ascii=False)[:400]}")
+            _safe_print(
+                f"  FAILED http={http}: {json.dumps(body, ensure_ascii=True)[:400]}"
+            )
             continue
 
         if status in counts:
@@ -170,13 +185,13 @@ def main(argv: list[str] | None = None) -> int:
         inserted = body.get("inserted_count")
         dup = body.get("duplicate_count")
         rows = body.get("row_count")
-        print(
+        _safe_print(
             f"  {status} rows={rows} inserted={inserted} duplicates={dup} "
             f"account={body.get('account_no')}"
         )
 
-    print("--- summary ---")
-    print(json.dumps(counts, indent=2))
+    _safe_print("--- summary ---")
+    _safe_print(json.dumps(counts, indent=2, ensure_ascii=True))
     return 1 if counts["failed"] else 0
 
 
