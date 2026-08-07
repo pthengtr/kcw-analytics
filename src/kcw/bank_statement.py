@@ -200,25 +200,76 @@ def extract_account_from_file(path: str) -> str:
     return resolved
 
 
+# Match kcw-v2 / bank.fp_transaction_detail — NOT display รายการ / time labels.
+STABLE_DETAIL_KEYS = (
+    "รายละเอียด",  # KBANK Thai export
+    "DESCRIPTION",  # KTB / English exports
+    "PARTICULAR",
+    "NARRATION",
+)
+
+
+def extract_stable_transaction_detail(raw: dict) -> str:
+    """Stable bank detail from raw_json keys (canonical identity component).
+
+    Looks up รายละเอียด / DESCRIPTION / PARTICULAR / NARRATION only.
+    Does not use display columns such as รายการ or TIME — those drift between
+    overlapping monthly vs cumulative KBANK exports and caused auto_v1 duplicates.
+    """
+    if not raw:
+        return ""
+    # Prefer exact key match first (preserves Thai keys that norm_text would alter).
+    for key in STABLE_DETAIL_KEYS:
+        val = raw.get(key)
+        if val is None or (isinstance(val, float) and pd.isna(val)):
+            continue
+        s = str(val).strip()
+        if s:
+            return s
+    # Case-/space-insensitive fallback for odd header casing from Excel.
+    by_norm = {norm_text(k): v for k, v in raw.items()}
+    for key in STABLE_DETAIL_KEYS:
+        val = by_norm.get(norm_text(key))
+        if val is None or (isinstance(val, float) and pd.isna(val)):
+            continue
+        s = str(val).strip()
+        if s:
+            return s
+    return ""
+
+
 def compute_transaction_fingerprint(
     *,
     account_no: str,
     txn_date: date | datetime,
     amount: Decimal | float,
     direction: str,
-    description: str | None,
     bank_reference: str | None,
     balance_after: Decimal | float | None,
     raw_json: dict | None = None,
+    description: str | None = None,
+    transaction_detail: str | None = None,
 ) -> str:
     """Canonical transaction identity (parser_version auto_v2).
 
-  Identity: account, date, amount, direction, stable_detail, bank_reference, balance.
-  Display description is excluded — use stable detail from raw_json when available.
+    Identity: account | date | amount | direction | stable_detail | bank_reference | balance.
+    Must match production ``bank.fp_build_hash`` / kcw-v2 ``buildTransactionFingerprint``.
+
+    Display ``description`` is intentionally unused. Overlapping KBANK exports may
+    show the same transfer as ``โอนเงิน`` in one file and ``08:31:00`` in another;
+    hashing that field recreated duplicate ``statement_lines`` (0393 / 3557 / …).
+
+    Fallback policy: if neither ``transaction_detail`` nor a stable raw_json key is
+    present, use empty string — do **not** fall back to display description. Empty
+    detail is still unique enough when amount + balance_after differ; falling back
+    to รายการ/time is what broke dedupe.
     """
-    stable_detail = extract_stable_transaction_detail(raw_json or {})
-    if not stable_detail and description:
-        stable_detail = str(description).strip()
+    # `description` is intentionally unused (call-site compat only).
+    _ = description
+    if transaction_detail is not None and str(transaction_detail).strip():
+        stable_detail = str(transaction_detail).strip()
+    else:
+        stable_detail = extract_stable_transaction_detail(raw_json or {})
     fp_input = "|".join(
         [
             norm_text(account_no),
@@ -231,25 +282,6 @@ def compute_transaction_fingerprint(
         ]
     )
     return sha256_text(fp_input)
-
-
-STABLE_DETAIL_KEYS = (
-    "รายละเอียด",
-    "DESCRIPTION",
-    "DETAIL",
-    "PARTICULAR",
-)
-
-
-def extract_stable_transaction_detail(raw: dict) -> str:
-    for key in STABLE_DETAIL_KEYS:
-        val = raw.get(key)
-        if val is None or (isinstance(val, float) and pd.isna(val)):
-            continue
-        s = str(val).strip()
-        if s:
-            return s
-    return ""
 
 
 def is_short_account_no(account_no: str | None) -> bool:
