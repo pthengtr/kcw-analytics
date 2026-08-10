@@ -45,6 +45,15 @@ def test_cli_has_upload_commands():
     args = parser.parse_args(["upload-iclow"])
     assert args.func.__name__ == "cmd_upload_iclow"
     assert args.site is None
+    args = parser.parse_args(["sync-icmas", "--site", "hq"])
+    assert args.func.__name__ == "cmd_sync_icmas"
+    args = parser.parse_args(["sync-icmas", "--site", "syp"])
+    assert args.func.__name__ == "cmd_sync_icmas"
+    args = parser.parse_args(["upload-icmas", "--site", "hq"])
+    assert args.func.__name__ == "cmd_upload_icmas"
+    args = parser.parse_args(["upload-icmas"])
+    assert args.func.__name__ == "cmd_upload_icmas"
+    assert args.site is None
     args = parser.parse_args(["sync-po-related", "--site", "hq"])
     assert args.func.__name__ == "cmd_sync_po_related"
     assert args.site == "hq"
@@ -63,7 +72,7 @@ def test_cli_has_upload_commands():
     assert args.func.__name__ == "cmd_upload_brdet_bpdet"
     args = parser.parse_args(["extract", "--site", "hq", "--tables", "POMAS,PODET"])
     assert args.tables == "POMAS,PODET"
-    print("CLI upload/sync PO/ICLOW/po-related/brdet-bpdet commands registered")
+    print("CLI upload/sync PO/ICLOW/ICMAS/po-related/brdet-bpdet commands registered")
 
 
 def test_upload_specs():
@@ -164,6 +173,7 @@ def test_extract_includes_pomas_podet():
     from src.kcw.extract_parts9 import (
         CHEQUE_TABLES,
         ICLOW_TABLES,
+        ICMAS_TABLES,
         PO_RELATED_TABLES,
         PO_TABLES,
         SI_TABLES,
@@ -182,6 +192,11 @@ def test_extract_includes_pomas_podet():
     assert TABLE_SPECS["ICLOW"]["suffix"] == "iclow_stock_orders"
     assert ICLOW_TABLES == ("ICLOW",)
     assert "ICLOW" in SYP_MINIMAL
+    assert "ICMAS" in TABLE_SPECS
+    assert TABLE_SPECS["ICMAS"]["years"] is None
+    assert TABLE_SPECS["ICMAS"]["suffix"] == "icmas_products"
+    assert ICMAS_TABLES == ("ICMAS",)
+    assert "ICMAS" in SYP_MINIMAL
     assert PO_RELATED_TABLES == ("PODET", "POMAS", "ICLOW")
     assert SI_TABLES == ("SIDET", "SIMAS")
     assert "ICMAS" not in PO_RELATED_TABLES
@@ -190,7 +205,7 @@ def test_extract_includes_pomas_podet():
     assert TABLE_SPECS["BPDET"]["suffix"] == "bpdet_cheques_paid"
     assert CHEQUE_TABLES == ("BRDET", "BPDET")
     assert "BRDET" not in SYP_MINIMAL and "BPDET" not in SYP_MINIMAL
-    print("Extract TABLE_SPECS / SYP_MINIMAL / PO_TABLES / ICLOW / PO_RELATED / SI / CHEQUE OK")
+    print("Extract TABLE_SPECS / SYP_MINIMAL / PO_TABLES / ICLOW / ICMAS / PO_RELATED / SI / CHEQUE OK")
 
 
 def test_supabase_db_url_rejects_https_api_url(monkeypatch_env=None):
