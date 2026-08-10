@@ -101,6 +101,24 @@ def cmd_sync_iclow(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_upload_icmas(args: argparse.Namespace) -> int:
+    """Drive raw_{site}_icmas_products.csv -> raw_kcw (one site or both)."""
+    from src.kcw.upload_raw import upload_icmas
+
+    upload_icmas(args.site)
+    return 0
+
+
+def cmd_sync_icmas(args: argparse.Namespace) -> int:
+    """Extract ICMAS for a site, then upload that site to Supabase."""
+    from src.kcw.extract_parts9 import ICMAS_TABLES, extract_tables
+    from src.kcw.upload_raw import upload_icmas
+
+    extract_tables(args.site, tables=ICMAS_TABLES)
+    upload_icmas(args.site)
+    return 0
+
+
 def cmd_upload_po_related(args: argparse.Namespace) -> int:
     """Drive PO/ICLOW CSVs -> raw_kcw (one site or both)."""
     from src.kcw.upload_raw import upload_po_related
@@ -313,6 +331,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     si.add_argument("--site", choices=("hq", "syp"), required=True)
     si.set_defaults(func=cmd_sync_iclow)
+
+    uic = sub.add_parser(
+        "upload-icmas",
+        help="Drive raw_{site}_icmas_products.csv -> raw_kcw (staging replace)",
+    )
+    uic.add_argument(
+        "--site",
+        choices=("hq", "syp"),
+        default=None,
+        help="Upload one site only (default: both)",
+    )
+    uic.set_defaults(func=cmd_upload_icmas)
+
+    sic = sub.add_parser(
+        "sync-icmas",
+        help="Extract ICMAS for a site then upload that site to raw_kcw (product masters)",
+    )
+    sic.add_argument("--site", choices=("hq", "syp"), required=True)
+    sic.set_defaults(func=cmd_sync_icmas)
 
     upr = sub.add_parser(
         "upload-po-related",

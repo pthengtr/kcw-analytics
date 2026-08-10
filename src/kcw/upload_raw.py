@@ -443,6 +443,35 @@ def upload_iclow(
     )
 
 
+def upload_icmas(
+    site: str | None = None,
+    *,
+    raw_folder: Optional[Path] = None,
+    db_url: Optional[str] = None,
+) -> list[dict]:
+    """
+    Upload ICMAS product-master Drive CSVs to raw_kcw.
+
+    site=None -> both HQ and SYP
+    site='hq'|'syp' -> that site only
+    """
+    if site is None:
+        specs = ICMAS_UPLOADS
+        label = "icmas"
+    else:
+        site = site.lower()
+        if site not in ("hq", "syp"):
+            raise ValueError("site must be 'hq', 'syp', or None")
+        specs = tuple(s for s in ICMAS_UPLOADS if s["site"] == site)
+        label = f"icmas-{site}"
+    return upload_raw_specs(
+        specs,
+        raw_folder=raw_folder,
+        db_url=db_url,
+        label=label,
+    )
+
+
 def upload_po_related(
     site: str | None = None,
     *,

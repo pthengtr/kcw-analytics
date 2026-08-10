@@ -57,6 +57,9 @@ PO_TABLES = ("PODET", "POMAS")
 # Focused ICLOW sync (HQ/SYP pending-receive / stock-order tracker).
 ICLOW_TABLES = ("ICLOW",)
 
+# Focused ICMAS sync (HQ/SYP product masters).
+ICMAS_TABLES = ("ICMAS",)
+
 # One-shot PO-related extract: purchase orders + stock-order / pending-receive tracker.
 # Inventory on-hand qty (curated_kcw.inventory_qty_latest) is a separate step
 # (notebook 50 / run_inventory_sync.bat) — not ICMAS raw upload.
