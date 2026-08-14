@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Install unixODBC + Microsoft ODBC Driver 18 and map KSS -> 192.168.1.99.
+# Install unixODBC + Microsoft ODBC Driver 18.
 # Ubuntu 26.04 has no official msodbcsql18 repo yet; use the 24.04 amd64 package.
+# Do not pin KSS in /etc/hosts — extract/API probe KSS.local, KSS, then last-known LAN IP.
 set -euo pipefail
 
 if [[ "${EUID}" -ne 0 ]]; then
@@ -21,12 +22,6 @@ touch /opt/microsoft/msodbcsql18/ACCEPT_EULA
 echo 'msodbcsql18 msodbcsql/ACCEPT_EULA boolean true' | debconf-set-selections
 ACCEPT_EULA=Y dpkg -i "${DEB_DIR}/msodbcsql18.deb"
 
-if ! grep -qE '[[:space:]]KSS([[:space:]]|$)' /etc/hosts; then
-  echo '192.168.1.99 KSS kss KSS.local' >> /etc/hosts
-fi
-
 echo
 odbcinst -q -d
-echo
-grep -E 'KSS' /etc/hosts
-echo "OK: ODBC Driver 18 installed; KSS -> 192.168.1.99"
+echo "OK: ODBC Driver 18 installed"
