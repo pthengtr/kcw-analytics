@@ -13,6 +13,7 @@ from typing import Optional
 import pandas as pd
 
 from src.kcw import paths
+from src.kcw.mssql_host import pick_mssql_server
 
 # Rolling windows + filenames match notebooks/51_parts9_to_drive.ipynb (HQ).
 # SYP original notebook used 5y for all bill tables — see SITE_YEARS.
@@ -97,6 +98,7 @@ def mssql_engine(site: str = "hq"):
     server = os.getenv(f"{prefix}_SERVER") or (
         os.getenv("KSS_SERVER", "KSS") if site == "hq" else os.getenv("KSS_PC_SERVER", "KSS-PC")
     )
+    server = pick_mssql_server(server)
     database = os.getenv(f"{prefix}_DATABASE", "PARTS9")
     user = os.getenv(f"{prefix}_USER") or (os.getenv("KSS_USER") if site == "hq" else None)
     password = os.getenv(f"{prefix}_PASSWORD") or (
