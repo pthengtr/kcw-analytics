@@ -2,6 +2,7 @@
 
 # Folder that contains "KCW-Data" (Windows Drive File Stream / Colab / Cowork mount)
 drive_root: "G:\\Shared drives"
+# Linux rclone: drive_root: "/home/hqadmin/mnt/gdrive"
 
 # Optional override: full path to kcw_analytics (skips drive_root/KCW-Data/kcw_analytics)
 # analytics_root: "G:\\Shared drives\\KCW-Data\\kcw_analytics"

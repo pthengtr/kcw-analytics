@@ -47,6 +47,8 @@ Copy [`.env.example`](.env.example) → `.env` and optionally [`paths.yaml.examp
 
 **Linux HQ-PC** (rclone Shared Drive, ODBC 18, Python 3.12 venv, headless boot): [kcw-docs `ops/hq-linux.md`](https://github.com/pthengtr/kcw-docs/blob/main/ops/hq-linux.md). Helper scripts: [`scripts/mount-kcw-drive.sh`](scripts/mount-kcw-drive.sh), [`scripts/install-mssql-odbc.sh`](scripts/install-mssql-odbc.sh).
 
+Notebooks resolve Drive via `src.kcw.notebook.setup()` / `KCW_DRIVE_ROOT` (Windows `G:\Shared drives`, Colab Shareddrives, or Linux `~/mnt/gdrive`). Do not hardcode `G:`.
+
 Required: `KCW_ANALYTICS_PYTHON`. Recommended: `KCW_DRIVE_ROOT` or `KCW_ANALYTICS_DATA_ROOT` (use the `G:\Shared drives\...` path — do not point at a DriveFS AppData cache path), `SUPABASE_DB_URL` or `DB_PASSWORD`, HQ `PARTS9_HQ_*` credentials.
 
 **SYP Task Scheduler** runs `python -m src.kcw.pipeline extract --site syp` (DriveFS-safe TEMP → copy → `os.replace`). Manual notebook: [`51_syp_parts9_to_drive_raw.ipynb`](notebooks/51_syp_parts9_to_drive_raw.ipynb).

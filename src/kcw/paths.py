@@ -51,6 +51,16 @@ def _load_paths_yaml() -> dict[str, Any]:
     return {}
 
 
+def _load_dotenv() -> None:
+    """Load repo .env so notebooks/CLI see KCW_DRIVE_ROOT without extra setup."""
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        return
+    load_dotenv(repo_root() / ".env")
+    load_dotenv()
+
+
 def drive_root() -> Path:
     """
     Root folder that contains KCW-Data (or is already the analytics tree).
@@ -58,12 +68,13 @@ def drive_root() -> Path:
     Preferred env: KCW_DRIVE_ROOT
       e.g. G:\\Shared drives
            /content/drive/Shareddrives
-           /mnt/gdrive
+           ~/mnt/gdrive          (Linux rclone)
 
     Optional paths.yaml keys:
       drive_root: ...
       analytics_root: ...   # full path to kcw_analytics (overrides composition)
     """
+    _load_dotenv()
     env = os.getenv("KCW_DRIVE_ROOT")
     if env:
         return _expand(env)
@@ -72,8 +83,9 @@ def drive_root() -> Path:
     if cfg.get("drive_root"):
         return _expand(cfg["drive_root"])
 
-    # Common local fallbacks (Windows Drive File Stream / Colab)
+    # Common local fallbacks (Windows Drive File Stream / Linux rclone / Colab)
     for candidate in (
+        Path.home() / "mnt" / "gdrive",
         Path(r"G:\Shared drives"),
         Path("/content/drive/Shareddrives"),
     ):
