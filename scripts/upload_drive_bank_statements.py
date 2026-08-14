@@ -8,7 +8,7 @@ Auth: SUPABASE_SERVICE_ROLE_KEY (HQ automation). Web UI continues to use user JW
 Env (from repo .env / process):
   SUPABASE_URL
   SUPABASE_SERVICE_ROLE_KEY
-  BANK_STATEMENT_BASE_DIR  (optional; default Drive path below)
+  BANK_STATEMENT_BASE_DIR  (optional; default <analytics>/01_raw/statement via KCW_DRIVE_ROOT)
 """
 
 from __future__ import annotations
@@ -23,9 +23,8 @@ import requests
 from dotenv import load_dotenv
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_BASE_DIR = Path(
-    r"G:\Shared drives\KCW-Data\kcw_analytics\01_raw\statement"
-)
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 BANK_FOLDERS = ("KBANK", "KTB")
 STATEMENT_EXTENSIONS = {".xlsx", ".xls", ".xlsm"}
 
@@ -112,13 +111,14 @@ def main(argv: list[str] | None = None) -> int:
         pass
 
     load_env()
+    from src.kcw.paths import raw_dir
+
+    default_base = Path(os.getenv("BANK_STATEMENT_BASE_DIR") or (raw_dir() / "statement"))
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--base-dir",
         type=Path,
-        default=Path(
-            os.getenv("BANK_STATEMENT_BASE_DIR") or DEFAULT_BASE_DIR
-        ),
+        default=default_base,
         help="Drive folder containing KBANK/ and KTB/ subfolders",
     )
     parser.add_argument(
