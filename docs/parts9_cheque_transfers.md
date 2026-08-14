@@ -2,6 +2,8 @@
 
 How PARTS9 stores the Excel reports **ทะเบียนเช็ครับ** and **ทะเบียนเช็คจ่าย**, and how they land in Supabase.
 
+**Canonical dictionary:** [kcw-brdet-bpdet-cheque-transfers-data-dictionary.md](https://github.com/pthengtr/kcw-docs/blob/main/dictionaries/kcw-brdet-bpdet-cheque-transfers-data-dictionary.md) (shared for api / v2 / analytics). This file is extract/validation notes.
+
 ## Source reports
 
 | Report | File (example) | PARTS9 table |

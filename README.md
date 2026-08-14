@@ -2,6 +2,8 @@
 
 PARTS9 extracts, Drive curated layers, TAR/billgen, and accounting reports for KCW HQ + SYP.
 
+**Shared docs / data dictionaries:** [kcw-docs](https://github.com/pthengtr/kcw-docs) ([dictionaries](https://github.com/pthengtr/kcw-docs/blob/main/dictionaries/README.md)).
+
 ## Architecture
 
 ```

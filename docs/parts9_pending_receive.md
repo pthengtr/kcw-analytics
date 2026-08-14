@@ -2,6 +2,8 @@
 
 How the legacy KSS / PARTS9 system flags open-PO items that are still pending receipt.
 
+**Canonical dictionary:** [kcw-iclow-pending-receive-data-dictionary.md](https://github.com/pthengtr/kcw-docs/blob/main/dictionaries/kcw-iclow-pending-receive-data-dictionary.md) (shared for api / v2 / analytics). This file is extract/validation notes.
+
 ## Source report
 
 - File: `G:\Shared drives\KCW-Data\kcw_analytics\07_temp\รายการสินค้าค้างรับ.xls`
