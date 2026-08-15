@@ -1,0 +1,15 @@
+[Unit]
+Description=KCW HQ B full pipeline (Linux)
+After=network-online.target rclone-kcw-data.service
+Wants=network-online.target rclone-kcw-data.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projects/kcw-analytic
+Environment=TZ=Asia/Bangkok
+TimeoutStartSec=10800
+Nice=10
+ExecStartPre=/usr/bin/mkdir -p %h/projects/kcw-analytic/logs
+ExecStart=%h/projects/kcw-analytic/worker_tasks/linux/hq_full.sh
+StandardOutput=append:%h/projects/kcw-analytic/logs/hq_full.systemd.log
+StandardError=append:%h/projects/kcw-analytic/logs/hq_full.systemd.log
