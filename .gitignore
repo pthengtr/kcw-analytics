@@ -13,6 +13,7 @@ __pycache__/
 *.pbix
 data/
 outputs/
+logs/
 Drive/
 .env
 paths.yaml

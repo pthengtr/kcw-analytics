@@ -1,9 +1,14 @@
 import json
 import os
 import shutil
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+# Repo-root ./supabase is SQL/functions, not the Python SDK.
+_repo_root = Path(__file__).resolve().parents[1]
+sys.path = [p for p in sys.path if Path(p).resolve() != _repo_root]
 
 import psycopg
 from dotenv import find_dotenv, load_dotenv
@@ -34,7 +39,14 @@ SUPABASE_DB_URL = env("SUPABASE_DB_URL", required=True)
 BUCKET = env("PRODUCT_IMAGE_BUCKET", "pictures")
 BASE_FOLDER = env("PRODUCT_IMAGE_BASE_FOLDER", "product").strip("/")
 
-LEGACY_IMAGE_DIR = Path(env("LEGACY_PRODUCT_IMAGE_DIR", required=True))
+_legacy_raw = env("LEGACY_PRODUCT_IMAGE_DIR", required=True)
+if os.name != "nt" and (_legacy_raw.startswith("\\\\") or _legacy_raw.startswith("//")):
+    raise SystemExit(
+        "LEGACY_PRODUCT_IMAGE_DIR is a Windows UNC path. "
+        "On Linux, mount the KSS Picture share and set a POSIX path. "
+        "Refusing to mkdir a fake local folder."
+    )
+LEGACY_IMAGE_DIR = Path(_legacy_raw)
 DELETE_MODE = env("PRODUCT_IMAGE_DELETE_MODE", "quarantine").strip().lower()
 
 PRODUCT_IMAGE_INDEX_SOURCE = env("PRODUCT_IMAGE_INDEX_SOURCE", "db").strip().lower()
@@ -42,8 +54,15 @@ PRODUCT_IMAGE_INDEX_SOURCE = env("PRODUCT_IMAGE_INDEX_SOURCE", "db").strip().low
 MANIFEST_PATH = LEGACY_IMAGE_DIR / "_product_image_sync_manifest.json"
 QUARANTINE_DIR = LEGACY_IMAGE_DIR / "_deleted"
 
-LEGACY_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
-QUARANTINE_DIR.mkdir(parents=True, exist_ok=True)
+if os.name == "nt":
+    LEGACY_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+    QUARANTINE_DIR.mkdir(parents=True, exist_ok=True)
+elif not LEGACY_IMAGE_DIR.is_dir():
+    raise SystemExit(
+        f"LEGACY_PRODUCT_IMAGE_DIR is not a directory: {LEGACY_IMAGE_DIR}"
+    )
+else:
+    QUARANTINE_DIR.mkdir(parents=True, exist_ok=True)
 
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 
