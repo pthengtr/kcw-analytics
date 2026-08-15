@@ -37,7 +37,7 @@ TABLE_SPECS = {
     "BPDET": {"years": None, "suffix": "bpdet_cheques_paid"},
 }
 
-# SYP rolling windows. Purchase invoices (PIMAS/PIDET) are HQ-only in daily extract.
+# SYP rolling windows (shorter than HQ TABLE_SPECS for bill/PO tables).
 SITE_YEARS = {
     "syp": {
         "SIDET": 5,
@@ -49,8 +49,9 @@ SITE_YEARS = {
     },
 }
 
-# Daily SYP extract: sales + products + POs + ICLOW. No PIMAS/PIDET (purchases happen at HQ).
-SYP_MINIMAL = ("PODET", "POMAS", "SIDET", "SIMAS", "ICMAS", "ICLOW")
+# Daily SYP extract: sales + products + POs + purchase invoices + ICLOW.
+# No BRDET/BPDET (cheque registers stay HQ).
+SYP_MINIMAL = ("PODET", "POMAS", "PIDET", "PIMAS", "SIDET", "SIMAS", "ICMAS", "ICLOW")
 
 # Focused PO sync (HQ/SYP worker tasks).
 PO_TABLES = ("PODET", "POMAS")

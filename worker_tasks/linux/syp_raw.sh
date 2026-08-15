@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SYP PARTS9 -> Drive raw_syp_*.csv from this HQ box (Tailscale kss-pc:1433).
-# Daily set: PODET, POMAS, SIDET, SIMAS, ICMAS, ICLOW.
+# Daily set: PODET, POMAS, PIDET, PIMAS, SIDET, SIMAS, ICMAS, ICLOW.
 source "$(dirname "$0")/common.sh"
 
 echo "=========================================="

@@ -3,7 +3,7 @@ setlocal EnableExtensions EnableDelayedExpansion
 
 REM SYP: PARTS9 (local SQL) -> Google Drive 01_raw (raw_syp_*.csv)
 REM Uses pipeline extract (DriveFS-safe TEMP->copy->replace writes).
-REM Daily set: PODET, POMAS, SIDET, SIMAS, ICMAS, ICLOW (no PIMAS/PIDET — HQ only).
+REM Daily set: PODET, POMAS, PIDET, PIMAS, SIDET, SIMAS, ICMAS, ICLOW (no BRDET/BPDET).
 REM Schedule this BEFORE the HQ raw/full pipeline so HQ can upload SYP POs.
 
 cd /d "%~dp0.."
