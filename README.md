@@ -118,8 +118,8 @@ python -m src.kcw.pipeline bank-statement-report --fixture-sample
 | `raw_{hq,syp}_podet_purchase_order_lines.csv` | matching site tables | PO lines |
 | `raw_hq_pimas_purchase_bills.csv` / `raw_hq_pidet_purchase_lines.csv` | HQ only | purchase invoices |
 | `raw_{hq,syp}_icmas_products.csv` | matching site tables | product masters |
-| `raw_hq_rvmas_notes_vouchers.csv` | `raw_hq_rvmas_notes_vouchers` | receipt vouchers (RC*) |
-| `raw_hq_pvmas_notes_vouchers.csv` | `raw_hq_pvmas_notes_vouchers` | payment vouchers (P* / KCPN*) |
+| `raw_hq_rvmas_notes_vouchers.csv` | `raw_hq_rvmas_notes_vouchers` | receipt notes then vouchers (RC*) |
+| `raw_hq_pvmas_notes_vouchers.csv` | `raw_hq_pvmas_notes_vouchers` | payment notes then vouchers (P* / KCPN*) — [notes/vouchers dictionary](https://github.com/pthengtr/kcw-docs/blob/main/dictionaries/kcw-pvmas-rvmas-notes-vouchers-data-dictionary.md) |
 | `raw_hq_brdet_cheques_received.csv` / `raw_hq_bpdet_cheques_paid.csv` | HQ only | cheque/transfer registers (`CHKNO` = cheque # or label) |
 | `raw_{hq,syp}_iclow_stock_orders.csv` | matching site tables | stock orders / pending receive |
 | `raw_hq_sidet_sales_lines.csv` / `raw_hq_simas_sales_bills.csv` | HQ only | sales lines / bills (latest 6 months) |

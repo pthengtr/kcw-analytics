@@ -28,7 +28,7 @@ Related but different:
 
 | Table | Role |
 |-------|------|
-| `PVMAS` / `RVMAS` | Payment / receipt voucher **headers** (totals, AP/AR account) |
+| `PVMAS` / `RVMAS` | Pay / receive **note then voucher** headers — [notes/vouchers dictionary](https://github.com/pthengtr/kcw-docs/blob/main/dictionaries/kcw-pvmas-rvmas-notes-vouchers-data-dictionary.md). `BPDET` only after `PVMAS.VOUCNO` |
 | `BKTRNS` | Bank statement / reconciliation lines |
 | `CHMAS` | Chart / bank **account master** (`TASK='BK'`, accounts like `2101.x`) — not register lines |
 
