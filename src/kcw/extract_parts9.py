@@ -88,9 +88,10 @@ def mssql_engine(site: str = "hq"):
       PARTS9_HQ_DATABASE (default PARTS9)
       PARTS9_HQ_USER / PARTS9_HQ_PASSWORD  OR trusted Windows auth if unset
     SYP:
-      PARTS9_SYP_SERVER (default KSS-PC)
+      PARTS9_SYP_SERVER (default KSS-PC; Linux HQ uses Tailscale kss-pc)
       PARTS9_SYP_DATABASE (default PARTS9)
-      trusted Windows auth by default (matches current SYP notebook)
+      PARTS9_SYP_USER / PARTS9_SYP_PASSWORD for SQL auth from Linux
+      trusted Windows auth if user/password unset (SYP notebook / Task Scheduler)
     """
     from sqlalchemy import create_engine
 
