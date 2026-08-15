@@ -11,3 +11,5 @@ nbconvert>=7.0
 pytz>=2024.1
 weasyprint>=62.0
 openpyxl>=3.1
+supabase>=2.0
+requests>=2.31

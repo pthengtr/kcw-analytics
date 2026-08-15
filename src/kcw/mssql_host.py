@@ -33,5 +33,5 @@ def pick_mssql_server(configured: str, *, port: int = 1433) -> str:
         if tcp_open(host, port=port):
             return host
     raise ConnectionError(
-        "SQL Server port %s not reachable on: %s" % (port, ", ".join(hosts))
+        "TCP port %s not reachable on: %s" % (port, ", ".join(hosts))
     )

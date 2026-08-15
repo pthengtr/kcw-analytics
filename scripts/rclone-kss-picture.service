@@ -1,0 +1,16 @@
+[Unit]
+Description=rclone mount KSS PARTS9 Picture share
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+ExecStartPre=/usr/bin/mkdir -p %h/mnt/kss/PARTS9/Picture
+ExecStart=%h/projects/kcw-analytic/scripts/rclone-kss-picture-mount.sh
+ExecStop=/usr/bin/fusermount3 -u %h/mnt/kss/PARTS9/Picture
+Restart=on-failure
+RestartSec=15
+TimeoutStartSec=90
+
+[Install]
+WantedBy=default.target
