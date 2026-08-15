@@ -185,7 +185,7 @@ def test_extract_includes_pomas_podet():
     assert TABLE_SPECS["POMAS"]["date_col"] == "DOCDATE"
     assert TABLE_SPECS["PODET"]["date_col"] == "DOCDATE"
     assert "POMAS" in SYP_MINIMAL and "PODET" in SYP_MINIMAL
-    assert "PIMAS" not in SYP_MINIMAL and "PIDET" not in SYP_MINIMAL
+    assert "PIMAS" in SYP_MINIMAL and "PIDET" in SYP_MINIMAL
     assert PO_TABLES == ("PODET", "POMAS")
     assert "ICLOW" in TABLE_SPECS
     assert TABLE_SPECS["ICLOW"]["years"] is None

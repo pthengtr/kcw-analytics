@@ -57,7 +57,7 @@ Required: `KCW_ANALYTICS_PYTHON`. Recommended: `KCW_DRIVE_ROOT` or `KCW_ANALYTIC
 
 Daily extract sets:
 - **HQ**: full `TABLE_SPECS` including POMAS/PODET + PIMAS/PIDET + ICLOW + BRDET/BPDET
-- **SYP**: POMAS/PODET + SIDET/SIMAS/ICMAS/ICLOW (no PIMAS/PIDET — purchases are HQ-only; no BRDET/BPDET)
+- **SYP**: POMAS/PODET + PIMAS/PIDET + SIDET/SIMAS/ICMAS/ICLOW (no BRDET/BPDET)
 
 ## CLI (BAT and Claude Cowork)
 
