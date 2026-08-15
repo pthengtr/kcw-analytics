@@ -1,0 +1,12 @@
+name: HQ Linux deploy
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux, hq]
+    steps:
+      - name: Pull kcw-analytic
+        run: bash "$HOME/projects/kcw-analytic/scripts/hq-linux-deploy.sh"

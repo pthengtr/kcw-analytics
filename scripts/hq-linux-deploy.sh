@@ -4,7 +4,7 @@ REPO="${HQ_KCW_ANALYTIC_DIR:-$HOME/projects/kcw-analytic}"
 PY="${REPO}/.venv/bin/python"
 cd "$REPO"
 git fetch origin
-git reset --hard origin/master
+git reset --hard origin/main
 if [[ -x "$PY" ]]; then
   if command -v uv >/dev/null 2>&1; then
     uv pip install --python "$PY" -r requirements.txt
