@@ -41,7 +41,9 @@ Local SQL Server is the only thing that must stay on the shop PCs. Everything af
 | **HQ** | [`worker_tasks/run_bank_statement_report.bat`](worker_tasks/run_bank_statement_report.bat) | Monthly bank statement Excel → `04_outputs/04_Bank_Statement_Report/` (also called after import; same CLI for webapp/chatbot enqueue) |
 | — | Edge Function `import-bank-statement` | Web upload path (kcw-v2) → parse → `bank.statement_*` + Storage `bank-statements` — see [`docs/bank_statement_upload.md`](docs/bank_statement_upload.md) |
 
-Schedule **SYP before HQ A/B** (e.g. SYP 06:00, HQ 06:30) so both site raw files exist (HQ uploads SYP POs from Drive).
+**Windows HQ-PC:** schedule **SYP before HQ A/B** (e.g. SYP 06:00, HQ 06:30) so both site raw files exist on Drive.
+
+**Linux HQ box:** HQ A/B runs `extract --site syp` first over Tailscale (`PARTS9_SYP_SERVER=kss-pc`, SQL auth). No wait on SYP Task Scheduler; `kss-pc` must be up. SYP BATs can stay as a backup until this box is trusted.
 
 Copy [`.env.example`](.env.example) → `.env` and optionally [`paths.yaml.example`](paths.yaml.example) → `paths.yaml`.
 
