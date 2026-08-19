@@ -64,7 +64,8 @@ TAR / CNTAR lines in sales Excel always treat amount as **VAT-inclusive** (`TOTA
 1. Calendar year/month of reporting month
 2. Drop bills whose `BILLNO` contains `TF`
 3. Split by bill prefix, then summarize per bill (`build_bill_summary_by_taxic`)
-4. Enrich from SIMAS (`ACCTNO`, `ACCTNAME`, tax fields, `PO`, …) and ARMAS `MOBILE`
+4. `DETAIL` (รายการสินค้า) comes from the line with the largest `|AMOUNT|`. Credit-note lines are negative, so algebraic `idxmax` would pick the smallest credit.
+5. Enrich from SIMAS (`ACCTNO`, `ACCTNAME`, tax fields, `PO`, …) and ARMAS `MOBILE`
 
 | Site | Doc type | Bill prefixes | Staging file |
 |------|----------|---------------|--------------|
