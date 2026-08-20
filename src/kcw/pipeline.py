@@ -230,6 +230,30 @@ def cmd_tar(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_tar_report(args: argparse.Namespace) -> int:
+    from src.kcw.tar_report import run_tar_reports
+
+    start = args.start or args.date
+    end = args.end or args.date
+    if not start:
+        start = date.today().isoformat()
+        end = start
+    summary = run_tar_reports(
+        start,
+        end,
+        prune_stale=not args.keep_stale,
+    )
+    print(f"[tar-report] done days={len(summary['days'])} pruned={len(summary['pruned'])}")
+    for row in summary["days"]:
+        print(
+            f"  {row['date']} hq_tar={row['hq_tar']} hq_cntar={row['hq_cntar']} "
+            f"syp_tar={row['syp_tar']} syp_cntar={row['syp_cntar']}"
+        )
+    for path in summary["pruned"]:
+        print(f"  pruned {path}")
+    return 0
+
+
 def cmd_bank_statement_report(args: argparse.Namespace) -> int:
     """Monthly multi-account bank statement Excel (VAT-style layout)."""
     from src.kcw.bank_statement_report import (
@@ -414,6 +438,26 @@ def build_parser() -> argparse.ArgumentParser:
         help="Delete fin_* for day then regenerate (explicit; does not rewind seq)",
     )
     t.set_defaults(func=cmd_tar)
+
+    tr = sub.add_parser(
+        "tar-report",
+        help="Regenerate TAR/3TAR/CNTAR PDFs+CSVs from billgen.fin_* (does not re-number bills)",
+    )
+    tr.add_argument("--date", help="Single day YYYY-MM-DD (default: start/end or today)")
+    tr.add_argument("--start", help="Range start YYYY-MM-DD")
+    tr.add_argument("--end", help="Range end YYYY-MM-DD")
+    tr.add_argument(
+        "--prune-stale",
+        action="store_true",
+        default=True,
+        help="Delete month-folder PDFs whose billno is no longer in fin_* (default)",
+    )
+    tr.add_argument(
+        "--keep-stale",
+        action="store_true",
+        help="Leave leftover PDFs in the month folder",
+    )
+    tr.set_defaults(func=cmd_tar_report)
 
     bsr = sub.add_parser(
         "bank-statement-report",
