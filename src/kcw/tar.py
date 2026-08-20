@@ -232,6 +232,11 @@ def _apply_day_filters(df: pd.DataFrame, *, site: str) -> pd.DataFrame:
         mask = billno.str.startswith(("DN", "3DN"), na=False)
     out = out.loc[~mask].copy()
 
+    # Stock-check adjustments (SA HQ / 3SA SYP) are not sales.
+    billno = out["BILLNO"].astype("string").str.strip().str.upper()
+    mask = billno.str.startswith(("SA", "3SA"), na=False)
+    out = out.loc[~mask].copy()
+
     mask = out["BCODE"].astype("string").str.startswith(("70", "91"), na=False)
     out = out.loc[~mask].copy()
     return out
