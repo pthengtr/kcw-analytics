@@ -6,6 +6,7 @@ import argparse
 import logging
 import sys
 import traceback
+import warnings
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -18,6 +19,14 @@ from .report_writer import write_report
 from .validations import run_validations
 
 logger = logging.getLogger("lazada_reconciliation")
+
+# Lazada exports often omit a default stylesheet; the warning is not actionable.
+warnings.filterwarnings(
+    "ignore",
+    message="Workbook contains no default style",
+    category=UserWarning,
+    module="openpyxl.styles.stylesheet",
+)
 
 MONTH_TOKENS = {
     "jan": "01",

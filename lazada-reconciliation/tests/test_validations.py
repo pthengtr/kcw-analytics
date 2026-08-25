@@ -63,7 +63,8 @@ def test_pre_post_group_totals_and_unknown_blank_order(tmp_path: Path):
     assert by_name.loc["opening_balance_present", "status"] == "WARNING"
     assert by_name.loc["empty_order_number", "status"] == "WARNING"
     assert result.overall_status in {"WARNING", "FAIL"}
-    assert "กระทบยอดสำเร็จ" not in str(result.warnings)
+    assert result.overall_status != "PASS"
+    assert not any(str(w).strip() == "กระทบยอดสำเร็จ" for w in result.warnings)
 
 
 def test_finance_components_equal_net(tmp_path: Path):

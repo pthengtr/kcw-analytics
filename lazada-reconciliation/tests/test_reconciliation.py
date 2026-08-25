@@ -60,7 +60,7 @@ def test_one_order_multiple_lines(tmp_path: Path):
     assert row["order_number"] == "1001"
     assert row["gross_order_amount"] == Decimal("150.00")
     assert row["source_line_count"] == 2
-    assert row["mixed_status"] is False
+    assert row["mixed_status"] == False
 
 
 def test_order_not_in_finance(tmp_path: Path):
@@ -88,7 +88,7 @@ def test_finance_not_in_order(tmp_path: Path):
     result = _run(orders_dir, finance_dir, wallet_dir)
     finance_only = result.order_vs_finance[result.order_vs_finance["order_number"] == "9999"].iloc[0]
     assert finance_only["match_status"] == "FINANCE_FROM_OTHER_PERIOD"
-    assert finance_only["in_orders"] is False
+    assert finance_only["in_orders"] == False
 
 
 def test_difference_within_and_beyond_tolerance(tmp_path: Path):
