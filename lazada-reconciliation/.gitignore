@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+output/*
+!output/.gitkeep
+input/orders/*
+!input/orders/.gitkeep
+input/finance/*
+!input/finance/.gitkeep
+input/wallet/*
+!input/wallet/.gitkeep
+*.xlsx
+*.xls
+!tests/fixtures/.gitkeep
