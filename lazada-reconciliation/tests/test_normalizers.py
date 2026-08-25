@@ -9,7 +9,7 @@ import pytest
 
 from src.file_detector import FileDetectionError, detect_excel_file, normalize_header
 from src.loaders import load_orders, load_wallet
-from src.normalizers import MoneyParseError, normalize_order_number, parse_money
+from src.normalizers import MoneyParseError, decimal_sum, normalize_order_number, parse_money
 from tests.helpers import write_orders, write_sheet, write_wallet
 
 
@@ -68,6 +68,64 @@ def test_header_not_on_first_row(tmp_path: Path):
 
 
 def test_grand_total_excluded(tmp_path: Path):
+    write_orders(
+        tmp_path / "orders.xlsx",
+        [
+            ["I1", "1001", "10.00", "confirmed", "01 Aug 2026"],
+            ["", "Grand Total", "999.00", "", ""],
+        ],
+    )
+    loaded = load_orders(tmp_path)
+    assert len(loaded.frame) == 1
+    assert loaded.dropped_total_rows == 1
+    assert loaded.frame.iloc[0]["order_number"] == "1001"
+
+
+def test_product_named_total_is_not_treated_as_grand_total(tmp_path: Path):
+    write_sheet(
+        tmp_path / "orders.xlsx",
+        ["orderItemId", "orderNumber", "paidPrice", "status", "createTime", "itemName"],
+        [
+            ["I1", "1001", "10.00", "confirmed", "01 Aug 2026", "Total"],
+            ["I2", "1002", "20.00", "confirmed", "01 Aug 2026", "ปะเก็นรวม"],
+            ["", "Grand Total", "999.00", "", "", ""],
+        ],
+    )
+    loaded = load_orders(tmp_path)
+    assert loaded.dropped_total_rows == 1
+    assert set(loaded.frame["order_number"]) == {"1001", "1002"}
+    assert decimal_sum(loaded.frame["signed_amount"]) == Decimal("30.00")
+
+
+def test_signed_amount_is_decimal_not_float(tmp_path: Path):
+    write_orders(tmp_path / "orders.xlsx", [["I1", "1001", 10.1, "confirmed", "01 Aug 2026"]])
+    loaded = load_orders(tmp_path)
+    value = loaded.frame.iloc[0]["signed_amount"]
+    assert isinstance(value, Decimal)
+    assert not isinstance(value, float)
+
+
+def test_pii_columns_dropped_from_loaded_orders(tmp_path: Path):
+    write_sheet(
+        tmp_path / "orders.xlsx",
+        [
+            "orderNumber",
+            "paidPrice",
+            "status",
+            "customerName",
+            "shippingPhone",
+            "billingPostCode",
+        ],
+        [["1001", "10.00", "confirmed", "นายทดสอบ ไม่ใช่ลูกค้าจริง", "0800000000", "10110"]],
+    )
+    loaded = load_orders(tmp_path)
+    columns = {str(c).casefold() for c in loaded.frame.columns}
+    assert "customername" not in columns
+    assert "shippingphone" not in columns
+    assert "billingpostcode" not in columns
+    joined = loaded.frame.astype(str).to_string()
+    assert "นายทดสอบ" not in joined
+    assert "0800000000" not in joined
     write_orders(
         tmp_path / "orders.xlsx",
         [

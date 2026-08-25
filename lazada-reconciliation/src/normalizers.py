@@ -10,7 +10,12 @@ from typing import Any
 
 import pandas as pd
 
-from .config import MONEY_QUANT, STATUS_GROUPS, TOTAL_ROW_MARKERS
+from .config import (
+    MONEY_QUANT,
+    STATUS_GROUPS,
+    STRONG_TOTAL_ROW_MARKERS,
+    WEAK_TOTAL_ROW_MARKERS,
+)
 
 logger = logging.getLogger("lazada_reconciliation")
 
@@ -64,7 +69,11 @@ def parse_money(value: Any) -> Decimal | None:
     if isinstance(value, int):
         return quantize_money(Decimal(value))
     if isinstance(value, float):
-        return quantize_money(Decimal(str(value)))
+        if math.isnan(value) or math.isinf(value):
+            return None
+        # Excel numeric cells arrive as float; quantize via from_float so we
+        # never add binary float values together.
+        return quantize_money(Decimal.from_float(value))
 
     text = str(value).replace("\ufeff", "").replace("\u00a0", " ").strip()
     if text == "" or text.casefold() in {"nan", "none", "null", "-", "–", "—"}:
@@ -91,20 +100,39 @@ def parse_money(value: Any) -> Decimal | None:
     return quantize_money(amount)
 
 
+def as_money(value: Any) -> Decimal | None:
+    """Coerce a cell to Decimal money. Empty/NaN -> None. Never returns float."""
+    if value is None:
+        return None
+    try:
+        if isinstance(value, float) and pd.isna(value):
+            return None
+    except Exception:  # noqa: BLE001
+        pass
+    if isinstance(value, Decimal):
+        return quantize_money(value)
+    try:
+        return parse_money(value)
+    except MoneyParseError:
+        return None
+
+
 def decimal_sum(values: Any) -> Decimal:
     total = Decimal("0.00")
     for value in values:
-        if value is None:
+        parsed = value if isinstance(value, Decimal) else as_money(value)
+        if parsed is None:
             continue
-        if isinstance(value, float) and pd.isna(value):
-            continue
-        if isinstance(value, Decimal):
-            total += value
-        else:
-            parsed = parse_money(value)
-            if parsed is not None:
-                total += parsed
+        total += parsed
     return quantize_money(total)
+
+
+def is_float_money(value: Any) -> bool:
+    if isinstance(value, bool) or value is None:
+        return False
+    if isinstance(value, float):
+        return not pd.isna(value)
+    return False
 
 
 def status_group(status: str | None) -> str:
@@ -113,20 +141,45 @@ def status_group(status: str | None) -> str:
     return STATUS_GROUPS.get(str(status).strip().casefold(), "other")
 
 
-def is_total_marker(value: Any) -> bool:
+def _marker_kind(value: Any) -> str | None:
     text = normalize_order_number(value)
     if not text:
-        return False
+        return None
     compact = re.sub(r"\s+", " ", text).strip().casefold()
     compact_nospace = compact.replace(" ", "")
-    for marker in TOTAL_ROW_MARKERS:
+    for marker in STRONG_TOTAL_ROW_MARKERS:
         if compact == marker or compact_nospace == marker.replace(" ", ""):
-            return True
-    return False
+            return "strong"
+    for marker in WEAK_TOTAL_ROW_MARKERS:
+        if compact == marker or compact_nospace == marker.replace(" ", ""):
+            return "weak"
+    return None
+
+
+def is_total_marker(value: Any) -> bool:
+    return _marker_kind(value) is not None
 
 
 def is_total_row(row: pd.Series) -> bool:
+    """Drop Grand Total rows without treating a product named Total as a total."""
+    kinds: list[str] = []
+    identifier_weak = False
+    order_number = None
+    if "order_number" in row.index:
+        order_number = normalize_order_number(row.get("order_number"))
+        if _marker_kind(order_number) == "weak":
+            identifier_weak = True
+    for column in ("wallet_type", "wallet_sub_type", "transaction_number", "freename"):
+        if column in row.index and _marker_kind(row.get(column)) == "weak":
+            identifier_weak = True
     for value in row.tolist():
-        if is_total_marker(value):
-            return True
+        kind = _marker_kind(value)
+        if kind:
+            kinds.append(kind)
+    if "strong" in kinds:
+        return True
+    if identifier_weak:
+        return True
+    if not order_number and "weak" in kinds:
+        return True
     return False

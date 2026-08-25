@@ -19,7 +19,7 @@ from .config import (
     WALLET_TYPE_CONTAINS,
 )
 from .loaders import LoadIssue, LoadedTable
-from .normalizers import decimal_sum, quantize_money, status_group
+from .normalizers import as_money, decimal_sum, quantize_money, status_group
 
 logger = logging.getLogger("lazada_reconciliation")
 
@@ -298,15 +298,9 @@ def match_orders_to_finance(
     for _, row in merged.iterrows():
         in_orders = row["_merge"] in {"both", "left_only"}
         in_finance = row["_merge"] in {"both", "right_only"}
-        gross = row.get("gross_order_amount")
-        income = row.get("finance_income")
-        if not isinstance(gross, Decimal):
-            gross = None
-        if not isinstance(income, Decimal):
-            income = None
-        net = row.get("finance_net_amount")
-        if not isinstance(net, Decimal):
-            net = None
+        gross = as_money(row.get("gross_order_amount")) if in_orders else None
+        income = as_money(row.get("finance_income")) if in_finance else None
+        net = as_money(row.get("finance_net_amount")) if in_finance else None
         difference = None
         if gross is not None and income is not None:
             difference = quantize_money(gross - income)
@@ -410,12 +404,14 @@ def wallet_totals(details: pd.DataFrame) -> dict[str, Any]:
         "bank_withdrawals": ZERO,
         "unknown_amount": ZERO,
         "signed_net": ZERO,
+        "movement_net": ZERO,
         "calculated_closing_balance": INSUFFICIENT_DATA,
         "wallet_difference": INSUFFICIENT_DATA,
         "formula": (
-            "เมื่อรายการถอนเป็นค่าติดลบ: signed_net = sum(signed_amount); "
-            "calculated_closing_balance = opening_balance + signed_net "
-            "หรือ opening + inflows + adjustments - withdrawals_as_positive"
+            "รายการถอนแสดงเป็นค่าบวกเพื่ออ่านง่ายเท่านั้น "
+            "calculated_closing_balance = opening_balance + movement_net "
+            "โดย movement_net = sum(signed_amount) ของแถวที่ไม่ใช่ opening/closing "
+            "ห้ามใช้ opening + signed_net เพราะ signed_net นับยอดยกมาอยู่แล้ว"
         ),
     }
     if details.empty:
@@ -440,13 +436,17 @@ def wallet_totals(details: pd.DataFrame) -> dict[str, Any]:
     auto_signed = _sum(auto_mask)
     unknown_amount = _sum(unknown_mask)
     signed_net = decimal_sum(details["signed_amount"])
+    movement_mask = ~opening_mask & ~closing_mask
+    movement_net = _sum(movement_mask) if movement_mask.any() else ZERO
     withdrawals_positive = quantize_money(-withdrawals_signed) if withdrawals_signed < ZERO else withdrawals_signed
     auto_positive = quantize_money(-auto_signed) if auto_signed < ZERO else auto_signed
 
     calculated: Any = INSUFFICIENT_DATA
     difference: Any = INSUFFICIENT_DATA
     if opening is not None:
-        calculated = quantize_money(opening + signed_net)
+        # Opening is a signed row in the file. Do not add it twice via signed_net.
+        # Presentation may show withdrawals as positive; calculation uses signed movement.
+        calculated = quantize_money(opening + movement_net)
         if reported_closing is not None:
             difference = quantize_money(calculated - reported_closing)
 
@@ -464,6 +464,7 @@ def wallet_totals(details: pd.DataFrame) -> dict[str, Any]:
         "bank_withdrawals": withdrawals_positive,
         "unknown_amount": unknown_amount,
         "signed_net": signed_net,
+        "movement_net": movement_net,
         "calculated_closing_balance": calculated,
         "wallet_difference": difference,
         "formula": empty["formula"],
@@ -621,6 +622,11 @@ def run_reconciliation(
     match_counts = {str(k): int(v) for k, v in match_counts.items()}
 
     post_group_orders = decimal_sum(order_summary["gross_order_amount"]) if not order_summary.empty else ZERO
+    orders_without_number = ZERO
+    if not orders.frame.empty and "order_number" in orders.frame.columns:
+        orders_without_number = decimal_sum(
+            orders.frame.loc[orders.frame["order_number"].isna(), "signed_amount"]
+        )
     post_group_finance = (
         decimal_sum(finance_summary["finance_net_amount"]) if not finance_summary.empty else ZERO
     )
@@ -637,8 +643,8 @@ def run_reconciliation(
         "finance_net_amount = sum(signed_amount) ของทุกรายการ Finance ของออเดอร์นั้น ไม่ใช่ผลรวมค่าสัมบูรณ์",
         "เมื่อไฟล์ Finance เป็น Income Order Overview ยอดเป็นยอดสุทธิ จึงใช้ match_status=NET_SETTLED หากผลต่างเกิน tolerance",
         "Wallet: ใช้คอลัมน์ Amount เท่านั้น ไม่ใช้ Sub Type เป็นจำนวนเงิน",
-        "รายการถอน Auto Withdrawal ในไฟล์ตัวอย่างเป็นค่าติดลบ จึงคำนวณ signed_net = sum(signed_amount)",
-        "calculated_closing_balance = opening_balance + signed_net เมื่อมียอดยกมา; ถ้าไม่มีแสดงว่าข้อมูลไม่เพียงพอ",
+        "รายการถอน Auto Withdrawal ใช้ signed amount ตามไฟล์ ไม่พลิกเครื่องหมายก่อนคำนวณ",
+        "calculated_closing_balance = opening_balance + movement_net (ไม่นับ opening/closing ซ้ำใน movement)",
         f"tolerance = {tolerance} บาท",
         "โปรแกรมนี้ช่วยกระทบยอด ไม่ใช่คำรับรองทางบัญชี",
     ]
@@ -673,7 +679,7 @@ def run_reconciliation(
             "wallet": wallet.pre_group_amount_sum or ZERO,
         },
         post_group_totals={
-            "orders": post_group_orders,
+            "orders": quantize_money(post_group_orders + orders_without_number),
             "finance": quantize_money(post_group_finance + finance_no_order),
             "wallet": post_group_wallet,
         },

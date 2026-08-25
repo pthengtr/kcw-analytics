@@ -12,7 +12,7 @@ from src.main import infer_month, run
 from src.reconciliation import run_reconciliation
 from src.report_writer import write_report
 from src.validations import run_validations
-from tests.helpers import write_finance_overview, write_finance_txn, write_orders, write_wallet
+from tests.helpers import write_finance_overview, write_finance_txn, write_orders, write_sheet, write_wallet
 
 
 def _prepare(tmp_path: Path):
@@ -136,10 +136,12 @@ def test_report_has_all_sheets_and_generated_total(tmp_path: Path):
     # Must not merge cells in the data table.
     assert order_sheet.merged_cells.ranges == set() or len(order_sheet.merged_cells.ranges) == 0
     exec_sheet = wb["Executive_Summary"]
-    assert exec_sheet["A2"].value.startswith("สถานะรวม")
-    assert "กระทบยอดสำเร็จ" not in "".join(
-        str(c.value or "") for row in exec_sheet.iter_rows(max_row=8) for c in row
-    )
+    banner = str(exec_sheet["A2"].value or "")
+    note = str(exec_sheet["B2"].value or "")
+    assert banner.startswith("สถานะรวม")
+    if "FAIL" in banner or "WARNING" in banner:
+        assert "ผ่านการตรวจสอบเบื้องต้น" not in note
+        assert not note.startswith("กระทบยอดสำเร็จ")
 
 
 def test_infer_month_from_filename():
@@ -148,3 +150,82 @@ def test_infer_month_from_filename():
     month2, warnings2 = infer_month(None, ["unknown.xlsx"])
     assert warnings2
     assert month2 != "2026-08"
+
+
+def test_empty_order_number_pre_post_totals_still_match(tmp_path: Path):
+    orders_dir = tmp_path / "orders"
+    finance_dir = tmp_path / "finance"
+    wallet_dir = tmp_path / "wallet"
+    orders_dir.mkdir()
+    finance_dir.mkdir()
+    wallet_dir.mkdir()
+    write_orders(
+        orders_dir / "o.xlsx",
+        [
+            ["I1", "1001", "40.00", "confirmed", "01 Aug 2026"],
+            ["I2", "", "5.00", "confirmed", "01 Aug 2026"],
+        ],
+    )
+    write_finance_overview(
+        finance_dir / "f.xlsx",
+        [["1001", "01 Aug 2026", "I1", "SKU", "30.00", "0", "ยืนยันแล้ว", "p", "B1", "โอนเงินไปยังยอดของฉันแล้ว", "SC"]],
+    )
+    write_wallet(wallet_dir / "w.xlsx", [["T1", "t", "Deposit", "Settlement", "+30.00", "s"]])
+    orders = load_orders(orders_dir)
+    finance = load_finance(finance_dir)
+    wallet = load_wallet(wallet_dir)
+    result = run_reconciliation(
+        orders, finance, wallet, month="2026-08", generated_at="t", tolerance=Decimal("0.01")
+    )
+    result = run_validations(result, orders, finance, wallet)
+    by_name = result.validations.set_index("validation_name")
+    assert result.pre_group_totals["orders"] == Decimal("45.00")
+    assert result.post_group_totals["orders"] == Decimal("45.00")
+    assert by_name.loc["pre_post_group_total_orders", "status"] == "PASS"
+    assert by_name.loc["no_float_in_money_columns", "status"] == "PASS"
+
+
+def test_pii_not_written_to_output_workbook(tmp_path: Path):
+    orders_dir = tmp_path / "orders"
+    finance_dir = tmp_path / "finance"
+    wallet_dir = tmp_path / "wallet"
+    out_dir = tmp_path / "output"
+    orders_dir.mkdir()
+    finance_dir.mkdir()
+    wallet_dir.mkdir()
+    write_sheet(
+        orders_dir / "orders.xlsx",
+        ["orderNumber", "paidPrice", "status", "customerName", "shippingPhone"],
+        [["1001", "10.00", "confirmed", "นายทดสอบ ไม่ใช่ลูกค้าจริง", "0800000000"]],
+    )
+    write_finance_overview(
+        finance_dir / "finance.xlsx",
+        [["1001", "01 Aug 2026", "I1", "SKU-TEST", "8.00", "0", "ยืนยันแล้ว", "p", "B1", "โอนเงินไปยังยอดของฉันแล้ว", "SC"]],
+    )
+    write_wallet(wallet_dir / "wallet.xlsx", [["T1", "t", "Deposit", "Settlement", "+8.00", "s"]])
+    code = run(
+        [
+            "--orders",
+            str(orders_dir),
+            "--finance",
+            str(finance_dir),
+            "--wallet",
+            str(wallet_dir),
+            "--output",
+            str(out_dir),
+            "--month",
+            "2026-08",
+        ]
+    )
+    assert code in {0, 2}
+    wb = load_workbook(out_dir / "lazada_reconciliation_2026-08.xlsx")
+    blob = []
+    for sheet in wb.sheetnames:
+        for row in wb[sheet].iter_rows(values_only=True):
+            blob.extend("" if v is None else str(v) for v in row)
+    text = "\n".join(blob)
+    assert "นายทดสอบ" not in text
+    assert "0800000000" not in text
+    log_text = (out_dir / "lazada_reconciliation_2026-08.log").read_text(encoding="utf-8")
+    assert "นายทดสอบ" not in log_text
+    assert "0800000000" not in log_text

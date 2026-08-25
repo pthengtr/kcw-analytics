@@ -10,7 +10,7 @@ import pandas as pd
 
 from .config import INSUFFICIENT_DATA
 from .loaders import LoadedTable
-from .normalizers import decimal_sum, quantize_money
+from .normalizers import decimal_sum, is_float_money, quantize_money
 from .reconciliation import ReconciliationResult
 
 ZERO = Decimal("0.00")
@@ -47,14 +47,43 @@ def run_validations(
     rows: list[ValidationRow] = []
     tolerance = result.tolerance
 
-    # 1. Money quantized to 2 decimal places
+    # 1. Money quantized to 2 decimal places and never stored as float
     bad_scale = 0
-    for frame in (result.order_summary, result.finance_summary, result.order_vs_finance):
-        if frame.empty:
+    float_money = 0
+    money_name_hints = (
+        "amount",
+        "price",
+        "fee",
+        "income",
+        "refund",
+        "adjustment",
+        "difference",
+        "gap",
+        "balance",
+        "withdrawal",
+        "inflow",
+        "paid",
+    )
+    money_frames = (
+        result.order_summary,
+        result.finance_summary,
+        result.order_vs_finance,
+        result.finance_details,
+        result.wallet_details,
+        orders.frame,
+        finance.frame,
+        wallet.frame,
+    )
+    for frame in money_frames:
+        if frame is None or getattr(frame, "empty", True):
             continue
         for column in frame.columns:
-            series = frame[column]
-            for value in series.tolist():
+            key = str(column).casefold()
+            if not any(hint in key for hint in money_name_hints):
+                continue
+            for value in frame[column].tolist():
+                if is_float_money(value):
+                    float_money += 1
                 if isinstance(value, Decimal) and value.as_tuple().exponent < -2:
                     bad_scale += 1
     rows.append(
@@ -65,6 +94,16 @@ def run_validations(
             f"ค่าที่ละเอียดเกิน 2 ตำแหน่ง: {bad_scale}",
             bad_scale,
             "parse_money ต้อง quantize เป็น 0.01 ก่อนเปรียบเทียบและก่อนเขียนรายงาน",
+        )
+    )
+    rows.append(
+        ValidationRow(
+            "no_float_in_money_columns",
+            "PASS" if float_money == 0 else "FAIL",
+            0,
+            float_money,
+            float_money,
+            "ห้ามเก็บหรือเปรียบเทียบจำนวนเงินด้วย float ในตารางคำนวณ",
         )
     )
 

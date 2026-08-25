@@ -226,3 +226,67 @@ def test_full_outer_join_keeps_all_keys(tmp_path: Path):
     result = _run(orders_dir, finance_dir, wallet_dir)
     keys = set(result.order_vs_finance["order_number"])
     assert keys == {"A", "B", "C"}
+
+
+def test_opening_balance_not_double_counted(tmp_path: Path):
+    orders_dir, finance_dir, wallet_dir = _dirs(tmp_path)
+    write_orders(orders_dir / "orders.xlsx", [["I1", "1001", "10.00", "confirmed", "01 Aug 2026"]])
+    write_finance_overview(
+        finance_dir / "finance.xlsx",
+        [["1001", "01 Aug 2026", "I1", "SKU", "8.00", "0", "ยืนยันแล้ว", "p", "B1", "โอนเงินไปยังยอดของฉันแล้ว", "SC"]],
+    )
+    write_wallet(
+        wallet_dir / "wallet.xlsx",
+        [
+            ["T0", "01 Aug 2026", "Deposit", "Opening Balance", "+1,000.00", "Brought forward"],
+            ["T1", "01 Aug 2026", "Deposit", "Settlement", "+100.00", "Statement"],
+            ["T2", "02 Aug 2026", "Withdrawal", "Auto Withdrawal", "-50.00", "Paid"],
+        ],
+    )
+    result = _run(orders_dir, finance_dir, wallet_dir)
+    assert result.wallet_totals["opening_balance"] == Decimal("1000.00")
+    assert result.wallet_totals["signed_net"] == Decimal("1050.00")
+    assert result.wallet_totals["movement_net"] == Decimal("50.00")
+    assert result.wallet_totals["calculated_closing_balance"] == Decimal("1050.00")
+    assert result.wallet_totals["withdrawals_signed"] == Decimal("-50.00")
+    assert result.wallet_totals["bank_withdrawals"] == Decimal("50.00")
+
+
+def test_unknown_wallet_type_is_exposed(tmp_path: Path):
+    orders_dir, finance_dir, wallet_dir = _dirs(tmp_path)
+    write_orders(orders_dir / "orders.xlsx", [["I1", "1001", "10.00", "confirmed", "01 Aug 2026"]])
+    write_finance_overview(
+        finance_dir / "finance.xlsx",
+        [["1001", "01 Aug 2026", "I1", "SKU", "8.00", "0", "ยืนยันแล้ว", "p", "B1", "โอนเงินไปยังยอดของฉันแล้ว", "SC"]],
+    )
+    write_wallet(
+        wallet_dir / "wallet.xlsx",
+        [
+            ["T1", "01 Aug 2026", "Deposit", "Settlement", "+80.00", "Statement"],
+            ["T2", "02 Aug 2026", "Mystery", "Quantum Fee", "-3.00", "unknown type"],
+        ],
+    )
+    result = _run(orders_dir, finance_dir, wallet_dir)
+    assert (result.wallet_details["mapped_category"] == "unknown").any()
+    raw_values = set(result.unknown_mappings["raw_value"].astype(str))
+    assert any("Quantum Fee" in value for value in raw_values)
+    assert result.wallet_totals["unknown_amount"] == Decimal("-3.00")
+    assert result.wallet_totals["signed_net"] == Decimal("77.00")
+
+
+def test_negative_finance_kept_signed_in_net(tmp_path: Path):
+    orders_dir, finance_dir, wallet_dir = _dirs(tmp_path)
+    write_orders(orders_dir / "orders.xlsx", [["I1", "1001", "100.00", "confirmed", "01 Aug 2026"]])
+    write_finance_txn(
+        finance_dir / "finance.xlsx",
+        [
+            ["1001", "Item price", "100.00", "0", "โอนเงินไปยังยอดของฉันแล้ว", "ยืนยันแล้ว"],
+            ["1001", "Commission", "-12.50", "0", "โอนเงินไปยังยอดของฉันแล้ว", "ยืนยันแล้ว"],
+        ],
+    )
+    _wallet_minimal(wallet_dir / "wallet.xlsx")
+    result = _run(orders_dir, finance_dir, wallet_dir)
+    fin = result.finance_summary.iloc[0]
+    assert fin["service_fee"] == Decimal("-12.50")
+    assert fin["finance_net_amount"] == Decimal("87.50")
+    assert fin["finance_income"] == Decimal("100.00")

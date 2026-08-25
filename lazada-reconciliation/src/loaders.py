@@ -172,6 +172,19 @@ def _normalize_shared(frame: pd.DataFrame, issues: list[LoadIssue], kind: str) -
             continue
         signed.append(parsed)
         absolute.append(abs(parsed) if parsed is not None else None)
+        if parsed is None and amount_col in working.columns:
+            issues.append(
+                LoadIssue(
+                    exception_type="AMOUNT_MISSING",
+                    severity="WARNING",
+                    description="จำนวนเงินว่าง จึงไม่สมมติเป็นศูนย์",
+                    source_file=source_file,
+                    source_row=source_row,
+                    order_number=order_number if isinstance(order_number, str) else None,
+                    actual_amount=raw,
+                    possible_reason="ค่าเงินว่างต้องเป็น null ไม่ใช่ศูนย์",
+                )
+            )
     if amount_col in working.columns:
         working["signed_amount"] = signed
         working["absolute_amount"] = absolute

@@ -13,6 +13,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.page import PageMargins
 
 from .config import INSUFFICIENT_DATA, PROGRAM_NAME, PROGRAM_VERSION
+from .normalizers import quantize_money
 from .reconciliation import ReconciliationResult
 
 MONEY_FORMAT = "#,##0.00;[Red]-#,##0.00"
@@ -40,7 +41,8 @@ def _excel_value(value: Any) -> Any:
     if value is None:
         return None
     if isinstance(value, Decimal):
-        return float(value)
+        quantized = quantize_money(value)
+        return float(format(quantized, "f"))
     if value is INSUFFICIENT_DATA or value == INSUFFICIENT_DATA:
         return INSUFFICIENT_DATA
     if isinstance(value, float) and value != value:  # NaN
@@ -398,7 +400,7 @@ def _write_order_vs_finance(ws, result: ReconciliationResult) -> None:
         ws.conditional_formatting.add(
             f"{diff_col}2:{diff_col}{last}",
             FormulaRule(
-                formula=[f"ABS({diff_col}2)>{float(result.tolerance)}"],
+                formula=[f"ABS({diff_col}2)>{format(result.tolerance, 'f')}"],
                 fill=FAIL_FILL,
             ),
         )
@@ -576,10 +578,8 @@ def _write_methodology(ws, result: ReconciliationResult) -> None:
         "สูตร Wallet",
         "  ใช้คอลัมน์ Amount เท่านั้น ห้ามใช้ Sub Type เป็นจำนวนเงิน",
         "  รายการ Type=Withdrawal / Sub Type=Auto Withdrawal = โอนเข้าธนาคาร",
-        "  หาก Amount เป็นค่าติดลบ: signed_net = sum(signed_amount)",
-        "  calculated_closing_balance = opening_balance + signed_net",
-        "  เทียบเท่า opening + inflows + adjustments - withdrawals_as_positive",
-        "  ถ้าไม่มี opening หรือ reported closing balance ให้แสดง 'ข้อมูลไม่เพียงพอ' ห้ามสมมติเป็น 0",
+        "  calculated_closing_balance = opening_balance + movement_net",
+        "  movement_net = sum(signed_amount) ของแถวที่ไม่ใช่ opening/closing — ไม่บวก opening ซ้ำ",
         "  รายงานยอดโอนเข้าธนาคารแสดงเป็นค่าบวกเพื่ออ่านง่าย แต่สูตรใช้ signed amount",
         "",
         "match_status",

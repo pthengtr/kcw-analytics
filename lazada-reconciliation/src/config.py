@@ -269,14 +269,20 @@ WALLET_TYPE_CONTAINS: tuple[tuple[str, str], ...] = (
 # Rows that must never be treated as orders / transactions
 # ---------------------------------------------------------------------------
 
-TOTAL_ROW_MARKERS = (
+# Strong markers always drop the row. Weak markers ("total"/"รวม") drop the row
+# only when they sit on an identifier or the order number is empty — never when
+# they appear as a product name on a real order.
+STRONG_TOTAL_ROW_MARKERS = (
     "grand total",
     "grandtotal",
-    "total",
-    "รวม",
     "รวมทั้งหมด",
     "ยอดรวม",
 )
+WEAK_TOTAL_ROW_MARKERS = (
+    "total",
+    "รวม",
+)
+TOTAL_ROW_MARKERS = STRONG_TOTAL_ROW_MARKERS + WEAK_TOTAL_ROW_MARKERS
 
 # Customer / personal columns — never copied to output or logs.
 PII_HEADER_HINTS = (
@@ -289,10 +295,14 @@ PII_HEADER_HINTS = (
     "shippingphone",
     "shippingcity",
     "shippingpost",
+    "shippingcountry",
+    "shippingregion",
     "billingname",
     "billingaddr",
     "billingphone",
     "billingcity",
+    "billingpost",
+    "billingcountry",
     "taxcode",
     "sellernote",
     "buyerfaileddeliveryusername",
