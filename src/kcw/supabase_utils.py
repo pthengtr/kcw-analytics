@@ -4,6 +4,8 @@ import psycopg2
 import pandas as pd
 import numpy as np
 
+from src.kcw.utils import exclude_transfer_stock_lines
+
 
 def _filter_from_latest(
     df: pd.DataFrame,
@@ -384,7 +386,7 @@ def enrich_sales_with_last_purchase_cost(
 ) -> pd.DataFrame:
 
     s = sales.copy()
-    p = purchases.copy()
+    p = exclude_transfer_stock_lines(purchases.copy())
 
     s[bcode_col] = s[bcode_col].astype("string").str.strip()
     p[bcode_col] = p[bcode_col].astype("string").str.strip()

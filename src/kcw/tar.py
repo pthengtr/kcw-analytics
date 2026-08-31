@@ -10,7 +10,7 @@ from typing import Optional, Sequence, Union
 import pandas as pd
 
 from src.kcw import paths
-from src.kcw.utils import get_nonvat_sales_lines_last_purchase_vat
+from src.kcw.utils import get_nonvat_sales_lines_last_purchase_vat, is_transfer_stock_billno
 
 DateLike = Union[str, date, datetime, pd.Timestamp]
 
@@ -222,8 +222,7 @@ def prepare_eligible_frames(data: dict) -> tuple[pd.DataFrame, pd.DataFrame]:
 
 def _apply_day_filters(df: pd.DataFrame, *, site: str) -> pd.DataFrame:
     out = df.copy()
-    mask = out["BILLNO"].astype("string").str.contains("TF", na=False)
-    out = out.loc[~mask].copy()
+    out = out.loc[~is_transfer_stock_billno(out["BILLNO"])].copy()
 
     billno = out["BILLNO"].astype("string").str.strip().str.upper()
     if site == "hq":
