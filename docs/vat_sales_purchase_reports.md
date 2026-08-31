@@ -184,8 +184,8 @@ Used by inventory / TAR / notebook 20 more than by the formal Excel books:
 | `get_vat_sales_lines` | `ISVAT=Y`, not canceled, year[/month] from SIDET |
 | `get_vat_purchase_lines` | `ISVAT=Y`, year[/month] from PIDET |
 | `remove_vat_inclusive` | if `TAXIC=Y` → `amount / 1.07` |
-| `get_vat_sales_lines_last_purchase_nonvat` | VAT sale whose latest purchase was non-VAT (feeds RV) |
-| `get_nonvat_sales_lines_last_purchase_vat` | NON-VAT sale whose latest purchase was VAT (feeds TAR) |
+| `get_vat_sales_lines_last_purchase_nonvat` | VAT sale whose latest purchase was non-VAT (feeds RV); ignores TF/3TF/TFV purchases |
+| `get_nonvat_sales_lines_last_purchase_vat` | NON-VAT sale whose latest purchase was VAT (feeds TAR); ignores TF/3TF/TFV purchases |
 
 ---
 

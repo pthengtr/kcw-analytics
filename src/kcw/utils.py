@@ -78,6 +78,23 @@ def _drop_invalid_bcode(df: pd.DataFrame, bcode_col: str = "BCODE") -> pd.DataFr
 
     return df
 
+
+def is_transfer_stock_billno(series: pd.Series) -> pd.Series:
+    """True for HQ↔SYP stock transfer bills (TF / 3TF / TFV), not supplier purchases."""
+    s = series.astype("string").str.strip().str.upper()
+    return s.str.match(r"^(3TF|TF)", na=False)
+
+
+def exclude_transfer_stock_lines(
+    df: pd.DataFrame,
+    *,
+    billno_col: str = "BILLNO",
+) -> pd.DataFrame:
+    if billno_col not in df.columns or df.empty:
+        return df
+    return df.loc[~is_transfer_stock_billno(df[billno_col])].copy()
+
+
 def get_nonvat_sales_lines(
     data: dict,
     year: int,
@@ -259,6 +276,7 @@ def get_vat_sales_lines_last_purchase_nonvat(
 
     sales = _drop_invalid_bcode(sales, "BCODE")
     pidet = _drop_invalid_bcode(pidet, "BCODE")
+    pidet = exclude_transfer_stock_lines(pidet)
 
     # --- Clean BCODE ---
     sales[bcode_col] = _clean_bcode(sales[bcode_col])
@@ -342,6 +360,7 @@ def get_nonvat_sales_lines_last_purchase_vat(
     # remove invalid BCODE early
     sales = _drop_invalid_bcode(sales, bcode_col)
     pidet = _drop_invalid_bcode(pidet, bcode_col)
+    pidet = exclude_transfer_stock_lines(pidet)
 
     # clean BCODE
     sales[bcode_col] = _clean_bcode(sales[bcode_col])
@@ -446,6 +465,7 @@ def audit_bcode_vat_sales_last_purchase(
     pidet["ISVAT"] = pidet["ISVAT"].astype(str).str.strip().str.upper()
 
     pidet_one = pidet.loc[pidet["BCODE"] == bcode_clean].copy()
+    pidet_for_asof = exclude_transfer_stock_lines(pidet_one)
 
     # ------------------
     # PRINT SUMMARY
@@ -511,12 +531,12 @@ def audit_bcode_vat_sales_last_purchase(
     # ------------------
     if len(sales_one) > 0:
         first_sale_date = sales_one["BILLDATE"].min()
-        eligible = pidet_one.loc[
-            pidet_one["BILLDATE"] <= first_sale_date
+        eligible = pidet_for_asof.loc[
+            pidet_for_asof["BILLDATE"] <= first_sale_date
         ].sort_values("BILLDATE")
 
         print("\nFirst sale date:", first_sale_date)
-        print("PIDET rows <= first sale:", len(eligible))
+        print("PIDET rows <= first sale (excl. TF/3TF):", len(eligible))
 
         if len(eligible) > 0:
             print("\nLast purchase before first sale (ASOF match):")
@@ -591,6 +611,7 @@ def audit_bcode_nonvat_sales_last_purchase_vat(
     pidet["ISVAT"] = pidet["ISVAT"].astype(str).str.strip().str.upper()
 
     pidet_one = pidet.loc[pidet["BCODE"] == bcode_clean].copy()
+    pidet_for_asof = exclude_transfer_stock_lines(pidet_one)
 
     # ------------------
     # PRINT SUMMARY
@@ -638,10 +659,12 @@ def audit_bcode_nonvat_sales_last_purchase_vat(
     # ------------------
     if len(sales_one) > 0:
         first_sale_date = sales_one["BILLDATE"].min()
-        eligible = pidet_one.loc[pidet_one["BILLDATE"] <= first_sale_date].sort_values("BILLDATE")
+        eligible = pidet_for_asof.loc[
+            pidet_for_asof["BILLDATE"] <= first_sale_date
+        ].sort_values("BILLDATE")
 
         print("\nFirst sale date:", first_sale_date)
-        print("PIDET rows <= first sale:", len(eligible))
+        print("PIDET rows <= first sale (excl. TF/3TF):", len(eligible))
 
         if len(eligible) > 0:
             last_purchase = eligible.tail(1).copy()
