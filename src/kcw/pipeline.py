@@ -119,6 +119,47 @@ def cmd_sync_icmas(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_sync_icmas_master(args: argparse.Namespace) -> int:
+    """HQ → SYP product-master sync (dry-run by default; --apply writes SYP)."""
+    from src.kcw.sync_icmas_master import run_sync
+
+    bcodes = None
+    if getattr(args, "bcode", None):
+        bcodes = [b.strip() for b in args.bcode.split(",") if b.strip()]
+    result = run_sync(
+        apply=bool(args.apply),
+        bcode_filter=bcodes,
+        limit=args.limit,
+        mirror_drive=not bool(args.no_drive_mirror),
+    )
+    s = result.summary
+    print(
+        f"[sync-icmas-master] mode={s['mode']} added={s['added']} "
+        f"updated={s['updated']} unchanged={s['unchanged']} "
+        f"syp_only={s['syp_only']} col_diffs={s['column_changes']} "
+        f"errors={s['errors']} report={result.report_dir}"
+    )
+    return 1 if result.errors else 0
+
+
+def cmd_sync_icmas_master_queue(args: argparse.Namespace) -> int:
+    """Drain HQ ICMAS_MASTER_SYNC_QUEUE and push claimed BCODEs to SYP."""
+    from src.kcw.sync_icmas_master import drain_queue
+
+    result = drain_queue(
+        limit=int(args.limit or 500),
+        mirror_drive=bool(args.drive_mirror),
+    )
+    print(
+        f"[sync-icmas-master-queue] claimed={result.pending_claimed} "
+        f"bcodes={len(result.bcodes)} applied_added={result.applied_added} "
+        f"applied_updated={result.applied_updated} "
+        f"marked_done={result.marked_done} marked_error={result.marked_error} "
+        f"errors={len(result.errors)}"
+    )
+    return 1 if result.errors else 0
+
+
 def cmd_upload_po_related(args: argparse.Namespace) -> int:
     """Drive PO/ICLOW CSVs -> raw_kcw (one site or both)."""
     from src.kcw.upload_raw import upload_po_related
@@ -374,6 +415,56 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sic.add_argument("--site", choices=("hq", "syp"), required=True)
     sic.set_defaults(func=cmd_sync_icmas)
+
+    sim = sub.add_parser(
+        "sync-icmas-master",
+        help=(
+            "HQ→SYP ICMAS product-master sync (DESCR/prices/new SKUs). "
+            "Dry-run by default; never overwrites QTY*/LOCATION*. "
+            "Reports under logs/icmas_master_sync/."
+        ),
+    )
+    sim.add_argument(
+        "--apply",
+        action="store_true",
+        help="Write INSERT/UPDATE to SYP PARTS9 (default: dry-run report only)",
+    )
+    sim.add_argument(
+        "--bcode",
+        help="Optional comma-separated BCODE filter (sample / targeted sync)",
+    )
+    sim.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Max HQ BCODEs to consider (after filter); useful for smoke tests",
+    )
+    sim.add_argument(
+        "--no-drive-mirror",
+        action="store_true",
+        help="Skip copying the report folder to Drive KCW-Data/ops/icmas_master_sync/",
+    )
+    sim.set_defaults(func=cmd_sync_icmas_master)
+
+    simq = sub.add_parser(
+        "sync-icmas-master-queue",
+        help=(
+            "Drain HQ ICMAS_MASTER_SYNC_QUEUE (trigger-fed) and push those "
+            "BCODEs to SYP. Requires scripts/sql/icmas_master_sync_queue.sql on KSS."
+        ),
+    )
+    simq.add_argument(
+        "--limit",
+        type=int,
+        default=500,
+        help="Max pending queue rows to claim per run (default 500)",
+    )
+    simq.add_argument(
+        "--drive-mirror",
+        action="store_true",
+        help="Also mirror the per-run report to Drive (off by default for frequent polls)",
+    )
+    simq.set_defaults(func=cmd_sync_icmas_master_queue)
 
     upr = sub.add_parser(
         "upload-po-related",

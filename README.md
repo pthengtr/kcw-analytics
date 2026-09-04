@@ -74,6 +74,11 @@ python -m src.kcw.pipeline sync-iclow --site hq
 python -m src.kcw.pipeline sync-iclow --site syp
 python -m src.kcw.pipeline sync-icmas --site hq
 python -m src.kcw.pipeline sync-icmas --site syp
+
+# HQ→SYP product-master sync (dry-run default; never touches QTY*/LOCATION*)
+python -m src.kcw.pipeline sync-icmas-master
+python -m src.kcw.pipeline sync-icmas-master --apply   # after review
+# Docs: kcw-docs/ops/icmas-master-sync.md
 python -m src.kcw.pipeline sync-po-related --site hq
 python -m src.kcw.pipeline sync-po-related --site syp
 python -m src.kcw.pipeline sync-simas-sidet
@@ -103,6 +108,8 @@ python -m src.kcw.pipeline bank-statement-report --fixture-sample
 `sync-iclow --site {hq|syp}` extracts that site's `ICLOW` (stock-order / ค้างรับ tracker) to Drive, then uploads to `raw_kcw.raw_{site}_iclow_stock_orders`. See [`docs/parts9_pending_receive.md`](docs/parts9_pending_receive.md).
 
 `sync-icmas --site {hq|syp}` extracts that site's `ICMAS` (product masters) to Drive, then uploads to `raw_kcw.raw_{site}_icmas_products`. Worker BATs: [`run_hq_icmas_sync.bat`](worker_tasks/run_hq_icmas_sync.bat) / [`run_syp_icmas_sync.bat`](worker_tasks/run_syp_icmas_sync.bat). LINE chatbot enqueue uses the same BATs via kcw-api `sync_icmas` jobs.
+
+**HQ→SYP live product master** (separate from Drive extract): trigger queue on KSS + `sync-icmas-master-queue` poller every 2 min; weekly `sync-icmas-master` dry-run as safety net. Preserves branch `QTY*` / `LOCATION*`. See [kcw-docs/ops/icmas-master-sync.md](../kcw-docs/ops/icmas-master-sync.md).
 `sync-brdet-bpdet` extracts HQ `BRDET`/`BPDET` (ทะเบียนเช็ครับ/จ่าย — cheque **or** transfer lines) to Drive, then uploads to `raw_kcw.raw_hq_brdet_cheques_received` / `raw_hq_bpdet_cheques_paid`. `CHKNO` is either a cheque number or a method label (`โอน`, `KSHOP`, …). See [`docs/parts9_cheque_transfers.md`](docs/parts9_cheque_transfers.md). Also included in `upload-daily-raw` and in daily bank sync [`run_bank_statement_import.bat`](worker_tasks/run_bank_statement_import.bat).
 
 `sync-po-related --site {hq|syp}` extracts `POMAS`/`PODET` + `ICLOW` for that site only (HQ and SYP must run on separate machines). For **HQ**, it also syncs `SIDET`/`SIMAS` to `raw_kcw` (latest 6 months). Worker BAT [`run_hq_po_related_sync.bat`](worker_tasks/run_hq_po_related_sync.bat) runs this single trigger then inventory on-hand qty via [`run_inventory_sync.bat`](worker_tasks/run_inventory_sync.bat) → `curated_kcw.inventory_qty_latest`. SYP BAT [`run_syp_po_related_sync.bat`](worker_tasks/run_syp_po_related_sync.bat) does PO/ICLOW + inventory only (no sales Supabase upload).

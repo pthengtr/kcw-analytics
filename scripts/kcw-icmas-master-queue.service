@@ -1,0 +1,15 @@
+[Unit]
+Description=KCW HQ→SYP ICMAS master queue drain (oneshot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projects/kcw-analytic
+Environment=TZ=Asia/Bangkok
+TimeoutStartSec=1800
+Nice=10
+ExecStartPre=/usr/bin/mkdir -p %h/projects/kcw-analytic/logs
+ExecStart=%h/projects/kcw-analytic/worker_tasks/linux/sync_icmas_master_queue.sh --limit 500
+StandardOutput=append:%h/projects/kcw-analytic/logs/icmas_master_queue.systemd.log
+StandardError=append:%h/projects/kcw-analytic/logs/icmas_master_queue.systemd.log

@@ -1,0 +1,16 @@
+[Unit]
+Description=KCW HQ→SYP ICMAS product-master weekly dry-run (reconcile)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projects/kcw-analytic
+Environment=TZ=Asia/Bangkok
+TimeoutStartSec=7200
+Nice=10
+ExecStartPre=/usr/bin/mkdir -p %h/projects/kcw-analytic/logs
+# Safety-net drift report only. Live path is the queue poller.
+ExecStart=%h/projects/kcw-analytic/worker_tasks/linux/sync_icmas_master.sh
+StandardOutput=append:%h/projects/kcw-analytic/logs/icmas_master_sync.systemd.log
+StandardError=append:%h/projects/kcw-analytic/logs/icmas_master_sync.systemd.log
