@@ -1,0 +1,12 @@
+[Unit]
+Description=KCW HQ→SYP ICMAS master queue drain every 2 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+AccuracySec=30s
+Persistent=false
+Unit=kcw-icmas-master-queue.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,11 @@
+[Unit]
+Description=KCW HQ→SYP ICMAS master weekly dry-run Sunday 05:30 Asia/Bangkok
+
+[Timer]
+OnCalendar=Sun *-*-* 05:30:00
+Persistent=true
+AccuracySec=1min
+Unit=kcw-icmas-master-sync.service
+
+[Install]
+WantedBy=timers.target
