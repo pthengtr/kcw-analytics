@@ -283,10 +283,23 @@ def _facts_hash(facts: dict[str, Any]) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
 
-def _list_model() -> str:
+def resolve_model(model: str | None = None) -> str:
+    """Pick Spark model id: explicit arg → SPARK_MODEL env → listed id → first loaded."""
+    preferred = (model or os.getenv("SPARK_MODEL") or os.getenv("PRODUCT_INSIGHT_MODEL") or "").strip()
     with urllib.request.urlopen(f"{SPARK_BASE}/models", timeout=30) as r:
         data = json.load(r)
-    return data["data"][0]["id"]
+    ids = [m["id"] for m in (data.get("data") or []) if m.get("id")]
+    if not ids:
+        raise RuntimeError(f"no models at {SPARK_BASE}/models")
+    if preferred:
+        if preferred in ids:
+            return preferred
+        raise RuntimeError(f"model {preferred!r} not loaded; available={ids}")
+    return ids[0]
+
+
+def _list_model() -> str:
+    return resolve_model(None)
 
 
 def _spark_chat(*, model: str, system: str, user: str, temperature: float) -> tuple[str, dict | None, float]:
@@ -311,8 +324,20 @@ def _spark_chat(*, model: str, system: str, user: str, temperature: float) -> tu
     with urllib.request.urlopen(req, timeout=3600) as r:
         body = json.load(r)
     elapsed = time.time() - t0
-    content = body["choices"][0]["message"]["content"]
+    msg = body["choices"][0]["message"]
+    content = _message_text(msg)
     return content, body.get("usage"), elapsed
+
+
+def _message_text(msg: dict[str, Any] | None) -> str:
+    """Nemotron reasoning servers often put the answer in `reasoning` with content=null."""
+    if not isinstance(msg, dict):
+        return ""
+    for key in ("content", "reasoning_content", "reasoning"):
+        val = msg.get(key)
+        if isinstance(val, str) and val.strip():
+            return val
+    return ""
 
 
 def _parse_insight_json(content: str) -> dict[str, Any]:
@@ -385,7 +410,7 @@ def generate_one(
             "anomalies": [f"json_parse_error: {exc}"],
             "dead_stock": "maybe",
             "dead_stock_reason": "model output was not valid JSON",
-            "raw": content[:2000],
+            "raw": (content or "")[:2000],
         }
 
     summary = insight.get("summary") if isinstance(insight, dict) else None
@@ -417,14 +442,15 @@ def run_generate(
     limit: int | None = None,
     concurrency: int = 1,
     resume: bool = True,
+    model: str | None = None,
 ) -> int:
     snap_id = resolve_snap_id(snap)
     site = site.lower()
     concurrency = max(1, min(int(concurrency), 8))
     prompt = load_prompt()
-    model = _list_model()
+    model_id = resolve_model(model)
     print(f"snap={snap_id} site={site} window={window} limit={limit} concurrency={concurrency} resume={resume}")
-    print(f"model={model} prompt={prompt.get('version')}")
+    print(f"model={model_id} prompt={prompt.get('version')}")
 
     queue = build_queue(site=site, snap_id=snap_id, window=window, limit=limit, resume=resume)
     print(f"queue_pending={len(queue)}")
@@ -445,7 +471,7 @@ def run_generate(
             window=window,
             facts_as_of=item.get("facts_as_of") or facts_as_of,
             prompt=prompt,
-            model=model,
+            model=model_id,
         )
 
     if concurrency == 1:
