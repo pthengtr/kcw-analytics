@@ -53,13 +53,12 @@ def resolve_snap_id(snap: str) -> str:
         if not snap_path(snap).is_file():
             raise FileNotFoundError(f"snapshot not found: {snap_path(snap)}")
         return snap
-    snaps = sorted(
-        (p.parent.name for p in snaps_dir().glob("*/snapshot.sqlite")),
-        reverse=True,
-    )
-    if not snaps:
+    # Prefer newest by mtime (name sort wrongly ranks "smoke5y" above timestamps).
+    paths = list(snaps_dir().glob("*/snapshot.sqlite"))
+    if not paths:
         raise FileNotFoundError(f"no snapshots under {snaps_dir()}")
-    return snaps[0]
+    newest = max(paths, key=lambda p: p.stat().st_mtime)
+    return newest.parent.name
 
 
 def connect_insights(*, readonly: bool = False) -> sqlite3.Connection:
@@ -73,6 +72,12 @@ def connect_insights(*, readonly: bool = False) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     return conn
+
+
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, decl: str) -> None:
+    cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
 
 def init_insights_schema(conn: sqlite3.Connection | None = None) -> None:
@@ -103,12 +108,26 @@ def init_insights_schema(conn: sqlite3.Connection | None = None) -> None:
           movement_score INTEGER NOT NULL DEFAULT 0,
           status TEXT NOT NULL DEFAULT 'pending',
           updated_at TEXT NOT NULL,
+          leased_at TEXT,
+          retry_count INTEGER NOT NULL DEFAULT 0,
+          last_error TEXT,
           PRIMARY KEY (site, bcode, snap_id, window)
+        );
+        CREATE TABLE IF NOT EXISTS insight_worker_state (
+          site TEXT PRIMARY KEY,
+          mover_window TEXT NOT NULL,
+          last_snap_id TEXT,
+          last_snap_at TEXT,
+          updated_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS insight_queue_status_idx
           ON insight_queue (site, snap_id, window, status, movement_score DESC);
         """
     )
+    # Migrate older DBs created before lease columns existed.
+    _ensure_column(conn, "insight_queue", "leased_at", "TEXT")
+    _ensure_column(conn, "insight_queue", "retry_count", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "insight_queue", "last_error", "TEXT")
     conn.commit()
     if own:
         conn.close()
@@ -202,7 +221,12 @@ def queue_status(site: str, bcode: str) -> dict[str, Any] | None:
             FROM insight_queue
             WHERE site = ? AND bcode = ?
             ORDER BY
-              CASE status WHEN 'pending' THEN 0 WHEN 'done' THEN 1 ELSE 2 END,
+              CASE status
+                WHEN 'running' THEN 0
+                WHEN 'pending' THEN 1
+                WHEN 'done' THEN 2
+                ELSE 3
+              END,
               updated_at DESC
             LIMIT 1
             """,
@@ -217,3 +241,15 @@ def queue_status(site: str, bcode: str) -> dict[str, Any] | None:
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+def parse_iso_dt(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    raw = value.strip()
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(raw)
+    except ValueError:
+        return None
