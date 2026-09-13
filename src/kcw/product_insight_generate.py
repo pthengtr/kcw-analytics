@@ -308,7 +308,7 @@ def _spark_chat(*, model: str, system: str, user: str, temperature: float) -> tu
         method="POST",
     )
     t0 = time.time()
-    with urllib.request.urlopen(req, timeout=600) as r:
+    with urllib.request.urlopen(req, timeout=3600) as r:
         body = json.load(r)
     elapsed = time.time() - t0
     content = body["choices"][0]["message"]["content"]
@@ -420,7 +420,7 @@ def run_generate(
 ) -> int:
     snap_id = resolve_snap_id(snap)
     site = site.lower()
-    concurrency = max(1, min(int(concurrency), 3))
+    concurrency = max(1, min(int(concurrency), 8))
     prompt = load_prompt()
     model = _list_model()
     print(f"snap={snap_id} site={site} window={window} limit={limit} concurrency={concurrency} resume={resume}")

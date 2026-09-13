@@ -345,6 +345,25 @@ def cmd_insight_generate(args: argparse.Namespace) -> int:
     )
 
 
+def cmd_insight_worker(args: argparse.Namespace) -> int:
+    from src.kcw.product_insight_worker import run_worker
+
+    return run_worker(
+        site=args.site,
+        mover_window=args.mover_window,
+        fresh_days=int(args.fresh_days),
+        soft_min_days=int(args.soft_min_days),
+        enable_soft_refresh=bool(args.soft_refresh),
+        auto_steady=not bool(args.no_auto_steady),
+        snap_every_days=int(args.snap_every_days),
+        idle_seconds=int(args.idle_seconds),
+        lease_minutes=int(args.lease_minutes),
+        max_retries=int(args.max_retries),
+        years=int(args.years),
+        max_jobs=args.max_jobs,
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="python -m src.kcw.pipeline",
@@ -626,13 +645,63 @@ def build_parser() -> argparse.ArgumentParser:
         help="Queue lookback from snap time (e.g. 5y, 14d, 2w)",
     )
     igen.add_argument("--limit", type=int, default=None, help="Top-N by movement (bench)")
-    igen.add_argument("--concurrency", type=int, default=1, help="Parallel Spark calls (1-3)")
+    igen.add_argument("--concurrency", type=int, default=1, help="Parallel Spark calls (1-8)")
     igen.add_argument(
         "--no-resume",
         action="store_true",
         help="Rebuild queue pending rows (default: resume skips done)",
     )
     igen.set_defaults(func=cmd_insight_generate)
+
+    iwork = sub.add_parser(
+        "insight-worker",
+        help="24/7 product-insight worker: catch-up then weekly movers (auto-steady)",
+    )
+    iwork.add_argument("--site", choices=("hq", "syp"), default="hq")
+    iwork.add_argument(
+        "--mover-window",
+        default="5y",
+        help="Eligible movers lookback (default 5y; auto-steady flips to 7d)",
+    )
+    iwork.add_argument(
+        "--fresh-days",
+        type=int,
+        default=14,
+        help="Skip / mark done if insight younger than this many days (default 14)",
+    )
+    iwork.add_argument(
+        "--soft-min-days",
+        type=int,
+        default=7,
+        help="Soft-refresh min age when --soft-refresh is on (default 7)",
+    )
+    iwork.add_argument(
+        "--soft-refresh",
+        action="store_true",
+        help="Also claim age in [soft-min, fresh) when higher tiers empty",
+    )
+    iwork.add_argument(
+        "--no-auto-steady",
+        action="store_true",
+        help="Do not switch 5y→7d when never-analyzed backlog is clear",
+    )
+    iwork.add_argument(
+        "--snap-every-days",
+        type=int,
+        default=7,
+        help="Refresh PARTS9 snapshot every N days (default 7)",
+    )
+    iwork.add_argument("--years", type=int, default=5, help="SI/PI years when taking a new snap")
+    iwork.add_argument("--idle-seconds", type=int, default=120, help="Sleep when no due work")
+    iwork.add_argument("--lease-minutes", type=int, default=90, help="Reclaim stale running leases")
+    iwork.add_argument("--max-retries", type=int, default=5, help="Errors before status=error")
+    iwork.add_argument(
+        "--max-jobs",
+        type=int,
+        default=None,
+        help="Exit after N successful jobs (smoke/test); default: run forever",
+    )
+    iwork.set_defaults(func=cmd_insight_worker)
 
     return p
 
