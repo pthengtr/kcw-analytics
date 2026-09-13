@@ -172,12 +172,69 @@ def build_queue(
 def _by_year(lines: list[dict[str, Any]]) -> dict[str, float]:
     y: dict[str, float] = defaultdict(float)
     for r in lines:
-        d = str(r.get("billdate") or "")[:4]
+        d = str(r.get("billdate") or r.get("BILLDATE") or "")[:4]
         try:
-            y[d] += float(r.get("qty") or 0)
+            y[d] += float(r.get("qty") if "qty" in r else r.get("QTY") or 0)
         except Exception:
             pass
     return {k: round(v, 4) for k, v in sorted(y.items())}
+
+
+def _line_qty(r: dict[str, Any]) -> float:
+    try:
+        return float(r.get("qty") if "qty" in r else r.get("QTY") or 0)
+    except Exception:
+        return 0.0
+
+
+def _line_date(r: dict[str, Any]) -> str:
+    return str(r.get("billdate") or r.get("BILLDATE") or "")[:10]
+
+
+def _recent_sales_rollup(
+    lines: list[dict[str, Any]],
+    *,
+    as_of: str,
+    customer_channels: set[str] | None = None,
+) -> dict[str, Any]:
+    """Absolute recent sales for ops (not 5y %-of-total)."""
+    customer_channels = customer_channels or {"hq_store", "online", "syp_store"}
+    try:
+        as_of_d = date.fromisoformat(as_of[:10])
+    except ValueError:
+        as_of_d = date.today()
+
+    def window_stats(days: int) -> dict[str, Any]:
+        start = (as_of_d - timedelta(days=days)).isoformat()
+        by_ch: dict[str, float] = defaultdict(float)
+        customer = 0.0
+        lines_n = 0
+        for r in lines:
+            d = _line_date(r)
+            if not d or d < start or d > as_of_d.isoformat():
+                continue
+            q = _line_qty(r)
+            ch = str(r.get("channel") or "unknown")
+            by_ch[ch] += q
+            lines_n += 1
+            if ch in customer_channels:
+                customer += q
+        months = max(days / 30.4375, 1 / 30.4375)
+        return {
+            "days": days,
+            "from": start,
+            "to": as_of_d.isoformat(),
+            "customer_qty": round(customer, 4),
+            "typical_monthly_qty": round(customer / months, 4),
+            "channel_qty": {k: round(v, 4) for k, v in sorted(by_ch.items())},
+            "line_count": lines_n,
+        }
+
+    return {
+        "note": "Use recent_* for rates/mix/holding. sales_5y is trend context only.",
+        "last_90d": window_stats(90),
+        "last_12m": window_stats(365),
+    }
 
 
 def build_fact_pack(snap: sqlite3.Connection, *, site: str, bcode: str, facts_as_of: str) -> dict[str, Any]:
@@ -243,6 +300,19 @@ def build_fact_pack(snap: sqlite3.Connection, *, site: str, bcode: str, facts_as
         # keep newest
         si_c = si_c[-MAX_LINES_PER_KIND:]
 
+    # Recent rollups from full SI history (before line soft-cap) for operational rates.
+    si_all: list[dict[str, Any]] = []
+    for r in si_rows:
+        ch = channel_of(r["billno"], r["jourmode"])
+        si_all.append(
+            {
+                "billdate": r["billdate"],
+                "qty": r["qty"],
+                "channel": ch,
+            }
+        )
+    recent = _recent_sales_rollup(si_all, as_of=facts_as_of)
+
     pi_c = [
         {
             "BILLNO": r["billno"],
@@ -264,6 +334,7 @@ def build_fact_pack(snap: sqlite3.Connection, *, site: str, bcode: str, facts_as
         "facts_as_of": facts_as_of,
         "window_years": 5,
         "master": master,
+        "recent": recent,
         "channel_qty_5y": {k: round(v, 4) for k, v in sorted(mix.items())},
         "sales_5y": {
             "line_count": len(si_rows),
