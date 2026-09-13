@@ -4,6 +4,8 @@ PARTS9 extracts, Drive curated layers, TAR/billgen, and accounting reports for K
 
 **Shared docs / data dictionaries:** [kcw-docs](https://github.com/pthengtr/kcw-docs) ([dictionaries](https://github.com/pthengtr/kcw-docs/blob/main/dictionaries/README.md)).
 
+**Product insights (Spark):** see [kcw-docs/ops/product-insights.md](https://github.com/pthengtr/kcw-docs/blob/main/ops/product-insights.md) — `insight-snapshot` / `insight-generate` CLI below.
+
 ## Architecture
 
 ```
