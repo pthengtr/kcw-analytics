@@ -17,7 +17,7 @@ from src.kcw.product_insight_generate import (
     generate_one,
     load_prompt,
     parse_window,
-    _list_model,
+    resolve_model,
     _open_snap,
     _snap_meta,
 )
@@ -383,6 +383,7 @@ def run_worker(
     concurrency: int = 1,
     years: int = 5,
     max_jobs: int | None = None,
+    model: str | None = None,
 ) -> int:
     """Run forever (or until max_jobs). concurrency is forced to 1 on this path."""
     site = site.lower()
@@ -408,11 +409,11 @@ def run_worker(
     last_snap_id = state.get("last_snap_id")
 
     prompt = load_prompt()
-    model = _list_model()
+    model_id = resolve_model(model)
     print(
         f"worker start site={site} window={mover_window} fresh_days={fresh_days} "
         f"auto_steady={auto_steady} soft={enable_soft_refresh} snap_every={snap_every_days}d "
-        f"model={model} prompt={prompt.get('version')}",
+        f"model={model_id} prompt={prompt.get('version')}",
         flush=True,
     )
 
@@ -547,7 +548,7 @@ def run_worker(
                 window=mover_window,
                 facts_as_of=item.get("facts_as_of") or utc_now_iso(),
                 prompt=prompt,
-                model=model,
+                model=model_id,
             )
             jobs_done += 1
             since_sync += 1

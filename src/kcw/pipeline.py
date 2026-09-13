@@ -342,6 +342,7 @@ def cmd_insight_generate(args: argparse.Namespace) -> int:
         limit=args.limit,
         concurrency=int(args.concurrency),
         resume=resume,
+        model=getattr(args, "model", None),
     )
 
 
@@ -361,6 +362,7 @@ def cmd_insight_worker(args: argparse.Namespace) -> int:
         max_retries=int(args.max_retries),
         years=int(args.years),
         max_jobs=args.max_jobs,
+        model=getattr(args, "model", None),
     )
 
 
@@ -647,6 +649,11 @@ def build_parser() -> argparse.ArgumentParser:
     igen.add_argument("--limit", type=int, default=None, help="Top-N by movement (bench)")
     igen.add_argument("--concurrency", type=int, default=1, help="Parallel Spark calls (1-8)")
     igen.add_argument(
+        "--model",
+        default=None,
+        help="Spark model id (default: SPARK_MODEL env or first loaded; e.g. nemotron-3-super)",
+    )
+    igen.add_argument(
         "--no-resume",
         action="store_true",
         help="Rebuild queue pending rows (default: resume skips done)",
@@ -700,6 +707,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Exit after N successful jobs (smoke/test); default: run forever",
+    )
+    iwork.add_argument(
+        "--model",
+        default=None,
+        help="Spark model id (default: SPARK_MODEL env or first loaded; e.g. nemotron-3-super)",
     )
     iwork.set_defaults(func=cmd_insight_worker)
 
