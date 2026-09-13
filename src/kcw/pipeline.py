@@ -324,6 +324,27 @@ def cmd_backfill_statement_accounts(args: argparse.Namespace) -> int:
     return backfill(apply=bool(args.apply))
 
 
+def cmd_insight_snapshot(args: argparse.Namespace) -> int:
+    from src.kcw.product_insight_snapshot import run_snapshot
+
+    run_snapshot(site=args.site, years=int(args.years), snap_id=args.snap_id or None)
+    return 0
+
+
+def cmd_insight_generate(args: argparse.Namespace) -> int:
+    from src.kcw.product_insight_generate import run_generate
+
+    resume = not bool(getattr(args, "no_resume", False))
+    return run_generate(
+        site=args.site,
+        snap=args.snap,
+        window=args.window,
+        limit=args.limit,
+        concurrency=int(args.concurrency),
+        resume=resume,
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="python -m src.kcw.pipeline",
@@ -583,6 +604,35 @@ def build_parser() -> argparse.ArgumentParser:
         help="Write updates to Supabase (default: dry-run only)",
     )
     bsa.set_defaults(func=cmd_backfill_statement_accounts)
+
+    isp = sub.add_parser(
+        "insight-snapshot",
+        help="Snapshot ICMAS+SI/PI from PARTS9 into local snap for product insights",
+    )
+    isp.add_argument("--site", choices=("hq", "syp"), default="hq")
+    isp.add_argument("--years", type=int, default=5, help="SI/PI lookback years (default 5)")
+    isp.add_argument("--snap-id", default=None, help="Optional snap id (default: timestamp)")
+    isp.set_defaults(func=cmd_insight_snapshot)
+
+    igen = sub.add_parser(
+        "insight-generate",
+        help="Generate product insights from a snapshot via Spark vLLM → local SQLite",
+    )
+    igen.add_argument("--site", choices=("hq", "syp"), default="hq")
+    igen.add_argument("--snap", default="latest", help="Snapshot id or 'latest'")
+    igen.add_argument(
+        "--window",
+        default="5y",
+        help="Queue lookback from snap time (e.g. 5y, 14d, 2w)",
+    )
+    igen.add_argument("--limit", type=int, default=None, help="Top-N by movement (bench)")
+    igen.add_argument("--concurrency", type=int, default=1, help="Parallel Spark calls (1-3)")
+    igen.add_argument(
+        "--no-resume",
+        action="store_true",
+        help="Rebuild queue pending rows (default: resume skips done)",
+    )
+    igen.set_defaults(func=cmd_insight_generate)
 
     return p
 
