@@ -80,6 +80,49 @@ def _ensure_column(conn: sqlite3.Connection, table: str, column: str, decl: str)
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
 
+INSIGHT_QUERY_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("typical_monthly_qty", "REAL"),
+    ("suggested_cover_weeks", "REAL"),
+    ("safe_holding_qty", "REAL"),
+    ("safe_holding_reason", "TEXT"),
+    ("order_ok", "TEXT"),
+    ("order_ok_reason", "TEXT"),
+    ("dead_stock", "TEXT"),
+    ("dead_stock_reason", "TEXT"),
+    ("suggested_order_qty", "REAL"),
+    ("suggested_order_qty_large", "REAL"),
+    ("order_unit", "TEXT"),
+    ("order_unit_large", "TEXT"),
+    ("last_supplier", "TEXT"),
+    ("last_buy_price", "REAL"),
+    ("last_buy_date", "TEXT"),
+    ("rec_qtymin", "REAL"),
+    ("rec_qtymin_reason", "TEXT"),
+    ("check_stock", "TEXT"),
+    ("stock_anomaly", "TEXT"),
+    ("qtyoh_hq", "REAL"),
+    ("qtyoh_syp", "REAL"),
+    ("qtymin_hq", "REAL"),
+    ("qtymin_syp", "REAL"),
+    ("rec_transfer_qty_to_syp", "REAL"),
+    ("rec_transfer_reason", "TEXT"),
+    ("sales_qty_30d", "REAL"),
+    ("sales_qty_90d", "REAL"),
+    ("sales_qty_12m", "REAL"),
+    ("trend_30d", "TEXT"),
+    ("trend_90d", "TEXT"),
+    ("trend_12m", "TEXT"),
+    ("trend_label", "TEXT"),
+    ("margin_pct_list", "REAL"),
+    ("margin_pct_12m", "REAL"),
+    ("margin_pct_prior_12m", "REAL"),
+    ("margin_delta_pp", "REAL"),
+    ("margin_flag", "TEXT"),
+    ("cost_change_pct_12m", "REAL"),
+    ("price_change_pct_12m", "REAL"),
+)
+
+
 def init_insights_schema(conn: sqlite3.Connection | None = None) -> None:
     own = conn is None
     if own:
@@ -128,6 +171,18 @@ def init_insights_schema(conn: sqlite3.Connection | None = None) -> None:
     _ensure_column(conn, "insight_queue", "leased_at", "TEXT")
     _ensure_column(conn, "insight_queue", "retry_count", "INTEGER NOT NULL DEFAULT 0")
     _ensure_column(conn, "insight_queue", "last_error", "TEXT")
+    for col, decl in INSIGHT_QUERY_COLUMNS:
+        _ensure_column(conn, "product_insights", col, decl)
+    conn.executescript(
+        """
+        CREATE INDEX IF NOT EXISTS pi_trend12_idx ON product_insights (trend_12m);
+        CREATE INDEX IF NOT EXISTS pi_trend90_idx ON product_insights (trend_90d);
+        CREATE INDEX IF NOT EXISTS pi_margin_flag_idx ON product_insights (margin_flag);
+        CREATE INDEX IF NOT EXISTS pi_order_ok_idx ON product_insights (order_ok);
+        CREATE INDEX IF NOT EXISTS pi_dead_idx ON product_insights (dead_stock);
+        CREATE INDEX IF NOT EXISTS pi_stock_anom_idx ON product_insights (stock_anomaly);
+        """
+    )
     conn.commit()
     if own:
         conn.close()
@@ -144,36 +199,50 @@ def upsert_insight(
     facts_hash: str | None,
     summary: str | None,
     insight_json: str,
+    extras: dict[str, Any] | None = None,
 ) -> None:
     conn = connect_insights()
     try:
         init_insights_schema(conn)
+        extra = extras or {}
+        extra_cols = [c for c, _ in INSIGHT_QUERY_COLUMNS if c in extra]
+        col_sql = (
+            "site, bcode, generated_at, facts_as_of, prompt_version, "
+            "model_id, facts_hash, summary, insight_json"
+        )
+        placeholders = "?, ?, ?, ?, ?, ?, ?, ?, ?"
+        values: list[Any] = [
+            site.lower(),
+            bcode.strip(),
+            generated_at,
+            facts_as_of,
+            prompt_version,
+            model_id,
+            facts_hash,
+            summary,
+            insight_json,
+        ]
+        update_sql = (
+            "generated_at=excluded.generated_at, "
+            "facts_as_of=excluded.facts_as_of, "
+            "prompt_version=excluded.prompt_version, "
+            "model_id=excluded.model_id, "
+            "facts_hash=excluded.facts_hash, "
+            "summary=excluded.summary, "
+            "insight_json=excluded.insight_json"
+        )
+        for col in extra_cols:
+            col_sql += f", {col}"
+            placeholders += ", ?"
+            values.append(extra.get(col))
+            update_sql += f", {col}=excluded.{col}"
         conn.execute(
-            """
-            INSERT INTO product_insights (
-              site, bcode, generated_at, facts_as_of, prompt_version,
-              model_id, facts_hash, summary, insight_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(site, bcode) DO UPDATE SET
-              generated_at=excluded.generated_at,
-              facts_as_of=excluded.facts_as_of,
-              prompt_version=excluded.prompt_version,
-              model_id=excluded.model_id,
-              facts_hash=excluded.facts_hash,
-              summary=excluded.summary,
-              insight_json=excluded.insight_json
+            f"""
+            INSERT INTO product_insights ({col_sql})
+            VALUES ({placeholders})
+            ON CONFLICT(site, bcode) DO UPDATE SET {update_sql}
             """,
-            (
-                site.lower(),
-                bcode.strip(),
-                generated_at,
-                facts_as_of,
-                prompt_version,
-                model_id,
-                facts_hash,
-                summary,
-                insight_json,
-            ),
+            values,
         )
         conn.commit()
     finally:

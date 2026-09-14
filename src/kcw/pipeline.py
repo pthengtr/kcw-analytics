@@ -325,9 +325,23 @@ def cmd_backfill_statement_accounts(args: argparse.Namespace) -> int:
 
 
 def cmd_insight_snapshot(args: argparse.Namespace) -> int:
-    from src.kcw.product_insight_snapshot import run_snapshot
+    from src.kcw.product_insight_snapshot import enrich_snapshot, run_snapshot
 
-    run_snapshot(site=args.site, years=int(args.years), snap_id=args.snap_id or None)
+    if getattr(args, "enrich_latest", False):
+        enrich_snapshot(snap="latest")
+        return 0
+
+    include_sites = None
+    if getattr(args, "hq_only", False):
+        include_sites = [args.site]
+    elif getattr(args, "sites", None):
+        include_sites = [s.strip() for s in str(args.sites).split(",") if s.strip()]
+    run_snapshot(
+        site=args.site,
+        years=int(args.years),
+        snap_id=args.snap_id or None,
+        include_sites=include_sites,
+    )
     return 0
 
 
@@ -633,8 +647,22 @@ def build_parser() -> argparse.ArgumentParser:
     isp.add_argument("--site", choices=("hq", "syp"), default="hq")
     isp.add_argument("--years", type=int, default=5, help="SI/PI lookback years (default 5)")
     isp.add_argument("--snap-id", default=None, help="Optional snap id (default: timestamp)")
+    isp.add_argument(
+        "--sites",
+        default=None,
+        help="Comma list of PARTS9 sources to extract (default for --site hq: hq,syp)",
+    )
+    isp.add_argument(
+        "--hq-only",
+        action="store_true",
+        help="Extract only the primary --site (skip SYP/kss-pc when primary is hq)",
+    )
+    isp.add_argument(
+        "--enrich-latest",
+        action="store_true",
+        help="Patch latest snap with HQ+SYP QTYOH/QTYMIN + PIMAS suppliers (no SI/PI re-extract)",
+    )
     isp.set_defaults(func=cmd_insight_snapshot)
-
     igen = sub.add_parser(
         "insight-generate",
         help="Generate product insights from a snapshot via Spark vLLM → local SQLite",
