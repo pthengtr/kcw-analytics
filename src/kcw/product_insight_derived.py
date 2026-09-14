@@ -17,6 +17,7 @@ MARGIN_FLAGS = ("healthy", "thin", "weak", "negative", "cost_up_price_lag", "unk
 ORDER_OK = ("yes", "caution", "no")
 DEAD_STOCK = ("yes", "no", "maybe")
 STOCK_ANOMALY = ("none", "negative", "do_not_restock", "other")
+ORDER_STATUS = ("no_order_needed", "should_order", "caution", "dead_stock")
 
 
 def _f(v: Any, default: float | None = None) -> float | None:
@@ -157,6 +158,35 @@ def _margin_pct(price: float | None, cost: float | None) -> float | None:
     return _round((p - c) / p * 100.0, 2)
 
 
+def classify_order_status(
+    *,
+    dead_stock: str | None,
+    order_ok: str | None,
+    company_qtyoh: float | None,
+    safe_holding_qty: float | None,
+    rec_qtymin: float | None,
+) -> str:
+    """Dashboard order status from policy + snap/live on-hand when available."""
+    if dead_stock == "yes":
+        return "dead_stock"
+    oh = _f(company_qtyoh)
+    hold = _f(safe_holding_qty)
+    trigger = _f(rec_qtymin)
+    if oh is not None and hold is not None and oh >= hold:
+        return "no_order_needed"
+    if oh is not None and trigger is not None and oh <= trigger:
+        return "should_order"
+    if order_ok == "caution" or dead_stock == "maybe":
+        return "caution"
+    if order_ok == "no":
+        return "caution"
+    if oh is not None and hold is not None and oh < hold:
+        return "should_order"
+    if order_ok == "yes":
+        return "no_order_needed"
+    return "caution"
+
+
 def build_derived(facts: dict[str, Any]) -> dict[str, Any]:
     """Assemble origin-traced numbers the prompt and SQLite columns share."""
     recent = facts.get("recent") or {}
@@ -272,6 +302,42 @@ def build_derived(facts: dict[str, Any]) -> dict[str, Any]:
         rec_qtymin = safe_holding_qty(monthly_12, trigger_weeks) if trigger_weeks else hold
     check_stock = "yes" if stock_anom in ("negative", "do_not_restock") else "no"
 
+    ch_hq = _f(ch12.get("hq_store"), 0.0) or 0.0
+    ch_syp = _f(ch12.get("syp_store"), 0.0) or 0.0
+    ch_online = _f(ch12.get("online"), 0.0) or 0.0
+    ch_cust = ch_hq + ch_syp + ch_online
+
+    def _ch_pct(part: float) -> float | None:
+        if ch_cust <= 0:
+            return None
+        return _round(part / ch_cust * 100.0, 1)
+
+    margin_pct = realized if realized is not None else list_pct
+    if delta_pp is not None:
+        if delta_pp >= 1:
+            margin_trend = "improving"
+        elif delta_pp <= -1:
+            margin_trend = "worsening"
+        else:
+            margin_trend = "stable"
+    elif margin_flag in ("healthy",):
+        margin_trend = "stable"
+    elif margin_flag in ("thin", "weak", "negative", "cost_up_price_lag"):
+        margin_trend = "worsening"
+    else:
+        margin_trend = "unknown"
+
+    order_status = classify_order_status(
+        dead_stock=dead,
+        order_ok=order_ok,
+        company_qtyoh=company_oh,
+        safe_holding_qty=hold,
+        rec_qtymin=rec_qtymin,
+    )
+
+    suppliers = (purchase.get("suppliers") or [])[:3]
+    customers = ((facts.get("customer_summary") or {}).get("customers") or [])[:3]
+
     return {
         "demand": {
             "customer_channels": list(CUSTOMER_CHANNELS),
@@ -357,14 +423,59 @@ def build_derived(facts: dict[str, Any]) -> dict[str, Any]:
             "delta_pp": delta_pp,
             "cost_change_pct_12m": cost_chg,
             "price_change_pct_12m": price_chg,
+            "avg_buy_12m": _f(margin_in.get("avg_buy_12m")),
+            "avg_sell_12m": _f(margin_in.get("avg_sell_12m")),
             "flag": margin_flag,
         },
+        "suppliers_12m": suppliers,
+        "customers_12m": customers,
         "flags": {
             "order_ok": order_ok,
+            "order_status": order_status,
             "dead_stock": dead,
             "check_stock": check_stock,
             "stock_anomaly": stock_anom,
             "rec_qtymin": rec_qtymin,
+        },
+        "dashboard": {
+            "sales": {
+                "latest_month": _round(qty_30, 2),
+                "avg_3m": _round(monthly_90, 2),
+                "avg_12m": _round(monthly_12, 2),
+                "total_12m": _round(qty_12, 2),
+                "trend": trend_12,
+            },
+            "channels_12m": {
+                "hq": _round(ch_hq, 2),
+                "syp": _round(ch_syp, 2),
+                "online": _round(ch_online, 2),
+                "hq_pct": _ch_pct(ch_hq),
+                "syp_pct": _ch_pct(ch_syp),
+                "online_pct": _ch_pct(ch_online),
+            },
+            "price_margin": {
+                "avg_buy": _round(_f(margin_in.get("avg_buy_12m")), 2),
+                "avg_sell": _round(_f(margin_in.get("avg_sell_12m")), 2),
+                "change_pct": _round(price_chg, 2),
+                "margin_pct": _round(margin_pct, 2),
+                "margin_trend": margin_trend,
+                "margin_flag": margin_flag,
+            },
+            "stock": {
+                "total": _round(company_oh, 2) if company_oh is not None else None,
+                "hq": qtyoh_hq,
+                "syp": qtyoh_syp,
+                "target": hold,
+                "reorder_point": rec_qtymin,
+                "suggested_lot": packed["order_qty"],
+                "qtymin_hq": qtymin_hq,
+                "qtymin_syp": qtymin_syp,
+                "unit": master.get("UI1"),
+            },
+            "order_status": order_status,
+            "dead_stock": dead,
+            "suppliers": suppliers,
+            "customers": customers,
         },
     }
 
@@ -404,43 +515,44 @@ def flatten_insight_columns(insight: dict[str, Any] | None, derived: dict[str, A
     margin = i.get("margin") if isinstance(i.get("margin"), dict) else {}
 
     return {
-        "typical_monthly_qty": _num(i.get("typical_monthly_qty"), hold.get("typical_monthly_qty")),
-        "suggested_cover_weeks": _num(i.get("suggested_cover_weeks"), hold.get("cover_weeks")),
-        "safe_holding_qty": _num(i.get("safe_holding_qty"), hold.get("safe_holding_qty")),
+        # Prefer Facts.derived over model so dashboard numbers never conflict.
+        "typical_monthly_qty": _num(hold.get("typical_monthly_qty"), i.get("typical_monthly_qty")),
+        "suggested_cover_weeks": _num(hold.get("cover_weeks"), i.get("suggested_cover_weeks")),
+        "safe_holding_qty": _num(hold.get("safe_holding_qty"), i.get("safe_holding_qty")),
         "safe_holding_reason": (purch.get("safe_holding_reason") or i.get("demand_hint") or "")[:500] or None,
-        "order_ok": _enum(purch.get("order_ok"), fl.get("order_ok"), ORDER_OK),
+        "order_ok": _enum(fl.get("order_ok"), purch.get("order_ok"), ORDER_OK),
         "order_ok_reason": (purch.get("order_ok_reason") or "")[:500] or None,
-        "dead_stock": _enum(i.get("dead_stock"), fl.get("dead_stock"), DEAD_STOCK),
+        "dead_stock": _enum(fl.get("dead_stock"), i.get("dead_stock"), DEAD_STOCK),
         "dead_stock_reason": (i.get("dead_stock_reason") or "")[:500] or None,
-        "suggested_order_qty": _num(purch.get("suggested_order_qty"), od.get("order_qty")),
-        "suggested_order_qty_large": _num(purch.get("suggested_order_qty_large"), od.get("order_qty_large")),
-        "order_unit": purch.get("order_unit") or od.get("ui1"),
-        "order_unit_large": purch.get("order_unit_large") or od.get("ui2"),
-        "last_supplier": purch.get("last_supplier") or od.get("last_supplier"),
-        "last_buy_price": _num(purch.get("last_buy_price"), od.get("last_buy_price")),
-        "last_buy_date": purch.get("last_buy_date") or od.get("last_buy_date"),
-        "rec_qtymin": _num(icmas.get("rec_qtymin"), fl.get("rec_qtymin")),
+        "suggested_order_qty": _num(od.get("order_qty"), purch.get("suggested_order_qty")),
+        "suggested_order_qty_large": _num(od.get("order_qty_large"), purch.get("suggested_order_qty_large")),
+        "order_unit": od.get("ui1") or purch.get("order_unit"),
+        "order_unit_large": od.get("ui2") or purch.get("order_unit_large"),
+        "last_supplier": od.get("last_supplier") or purch.get("last_supplier"),
+        "last_buy_price": _num(od.get("last_buy_price"), purch.get("last_buy_price")),
+        "last_buy_date": od.get("last_buy_date") or purch.get("last_buy_date"),
+        "rec_qtymin": _num(fl.get("rec_qtymin"), icmas.get("rec_qtymin")),
         "rec_qtymin_reason": (icmas.get("rec_qtymin_reason") or "")[:500] or None,
-        "check_stock": _enum(icmas.get("check_stock"), fl.get("check_stock"), ("yes", "no")),
-        "stock_anomaly": _enum(icmas.get("stock_anomaly"), fl.get("stock_anomaly"), STOCK_ANOMALY),
+        "check_stock": _enum(fl.get("check_stock"), icmas.get("check_stock"), ("yes", "no")),
+        "stock_anomaly": _enum(fl.get("stock_anomaly"), icmas.get("stock_anomaly"), STOCK_ANOMALY),
         "qtyoh_hq": _num(st.get("qtyoh_hq")),
         "qtyoh_syp": _num(st.get("qtyoh_syp")),
         "qtymin_hq": _num(st.get("qtymin_hq")),
         "qtymin_syp": _num(st.get("qtymin_syp")),
-        "rec_transfer_qty_to_syp": _num(xfer.get("qty"), trn.get("rec_transfer_qty_to_syp")),
+        "rec_transfer_qty_to_syp": _num(trn.get("rec_transfer_qty_to_syp"), xfer.get("qty")),
         "rec_transfer_reason": (xfer.get("reason") or "")[:500] or None,
         "sales_qty_30d": _num(dem.get("qty_30d")),
         "sales_qty_90d": _num(dem.get("qty_90d")),
         "sales_qty_12m": _num(dem.get("qty_12m")),
-        "trend_30d": _enum(trends.get("d30"), td.get("30d"), TREND_LABELS),
-        "trend_90d": _enum(trends.get("d90"), td.get("90d"), TREND_LABELS),
-        "trend_12m": _enum(trends.get("m12"), td.get("12m"), TREND_LABELS),
-        "trend_label": _enum(i.get("trend_label"), td.get("12m"), TREND_LABELS),
-        "margin_pct_list": _num(margin.get("list_pct"), mg.get("list_pct")),
+        "trend_30d": _enum(td.get("30d"), trends.get("d30"), TREND_LABELS),
+        "trend_90d": _enum(td.get("90d"), trends.get("d90"), TREND_LABELS),
+        "trend_12m": _enum(td.get("12m"), trends.get("m12"), TREND_LABELS),
+        "trend_label": _enum(td.get("12m"), i.get("trend_label"), TREND_LABELS),
+        "margin_pct_list": _num(mg.get("list_pct"), margin.get("list_pct")),
         "margin_pct_12m": _num(mg.get("realized_pct_12m")),
         "margin_pct_prior_12m": _num(mg.get("realized_pct_prior_12m")),
-        "margin_delta_pp": _num(margin.get("delta_pp"), mg.get("delta_pp")),
-        "margin_flag": _enum(margin.get("flag"), mg.get("flag"), MARGIN_FLAGS),
+        "margin_delta_pp": _num(mg.get("delta_pp"), margin.get("delta_pp")),
+        "margin_flag": _enum(mg.get("flag"), margin.get("flag"), MARGIN_FLAGS),
         "cost_change_pct_12m": _num(mg.get("cost_change_pct_12m")),
         "price_change_pct_12m": _num(mg.get("price_change_pct_12m")),
     }

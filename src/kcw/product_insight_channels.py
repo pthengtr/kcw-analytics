@@ -55,9 +55,10 @@ def channel_of(
 
 CHANNEL_LEGEND = """
 CHANNEL LEGEND (must use correctly):
-- TAD / CNTAD / channel=online = online sales (ONLINE), not HQ counter
-- TF / TFV / channel=transfer = HQ↔SYP stock transfer, NOT customer sales
-- hq_store / syp_store = counter/branch customer sales (Facts may include both HQ KSS + SYP kss-pc SI/PI)
-- QTYOH2 / QTYMIN in Facts.stock are snapshot-time (facts_as_of) and go stale within days — policy only, not live / not order-now
-- channel_qty_5y aggregates qty by channel across sources; prefer recent.* / derived.demand for ops
+- In prose always write HQ / SYP / Online (never hq_store / syp_store / online / Transfer).
+- TAD / CNTAD = Online sales, not HQ counter
+- TF / TFV = HQ↔SYP stock transfer — NOT customer demand; do not show Transfer on the dashboard
+- HQ / SYP = counter/branch customer sales (Facts may include both HQ KSS + SYP kss-pc SI/PI)
+- QTYOH2 / QTYMIN in Facts.stock are snapshot-time (facts_as_of) and go stale — policy only
+- Prefer Facts.derived.dashboard for all dashboard numbers
 """.strip()

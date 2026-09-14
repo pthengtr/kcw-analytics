@@ -303,12 +303,49 @@ def _is_vendor_purchase(billno: str | None) -> bool:
     return True
 
 
-def _purchase_summary(pi_rows: list[dict[str, Any]]) -> dict[str, Any]:
+def _is_general_customer(acctno: str | None, acctname: str | None) -> bool:
+    """Walk-in / cash / 'ลูกค้าทั่วไป' — exclude from top-customer ranking."""
+    no = (acctno or "").strip()
+    name = (acctname or "").strip()
+    if not no:
+        return True
+    if "ลูกค้าทั่วไป" in name:
+        return True
+    low = name.lower()
+    if low in ("cash", "walk-in", "walkin", "general"):
+        return True
+    if "general customer" in low:
+        return True
+    return False
+
+
+def _window_bounds(as_of: str, days: int = 365) -> tuple[str, str]:
+    try:
+        as_of_d = date.fromisoformat(as_of[:10])
+    except ValueError:
+        as_of_d = date.today()
+    end = as_of_d.isoformat()
+    start = (as_of_d - timedelta(days=days)).isoformat()
+    return start, end
+
+
+def _purchase_summary(
+    pi_rows: list[dict[str, Any]],
+    *,
+    as_of: str | None = None,
+    days: int = 365,
+    top_n: int = 3,
+) -> dict[str, Any]:
+    start, end = (None, None)
+    if as_of:
+        start, end = _window_bounds(as_of, days)
     vendor_rows = [r for r in pi_rows if _is_vendor_purchase(r.get("BILLNO"))]
     by_sup: dict[str, dict[str, Any]] = defaultdict(lambda: {"qty": 0.0, "amount": 0.0, "lines": 0})
     last = None
     for r in vendor_rows:
         d = str(r.get("BILLDATE") or "")[:10]
+        if start and end and (not d or d < start or d > end):
+            continue
         q = _fnum(r.get("QTY")) or 0.0
         amt = _fnum(r.get("AMOUNT"))
         if amt is None:
@@ -322,8 +359,11 @@ def _purchase_summary(pi_rows: list[dict[str, Any]]) -> dict[str, Any]:
         slot["acctno"] = r.get("ACCTNO")
         if last is None or d >= str(last.get("BILLDATE") or ""):
             last = r
-    top = sorted(by_sup.items(), key=lambda kv: kv[1]["qty"], reverse=True)[:5]
+    top = sorted(by_sup.items(), key=lambda kv: kv[1]["qty"], reverse=True)[:top_n]
     return {
+        "window_days": days if as_of else None,
+        "from": start,
+        "to": end,
         "last_date": (last or {}).get("BILLDATE"),
         "last_price": _fnum((last or {}).get("PRICE")),
         "last_qty": _fnum((last or {}).get("QTY")),
@@ -337,6 +377,65 @@ def _purchase_summary(pi_rows: list[dict[str, Any]]) -> dict[str, Any]:
                 "acctno": v.get("acctno"),
                 "qty": round(v["qty"], 4),
                 "amount": round(v["amount"], 2),
+                "avg_price": round(v["amount"] / v["qty"], 4) if v["qty"] else None,
+                "lines": v["lines"],
+            }
+            for k, v in top
+        ],
+    }
+
+
+def _customer_summary(
+    si_rows: list[dict[str, Any]],
+    *,
+    as_of: str,
+    days: int = 365,
+    top_n: int = 3,
+    customer_channels: set[str] | None = None,
+) -> dict[str, Any]:
+    """Top customers by qty over window; excludes walk-in / ลูกค้าทั่วไป."""
+    customer_channels = customer_channels or {"hq_store", "online", "syp_store"}
+    start, end = _window_bounds(as_of, days)
+    by_cust: dict[str, dict[str, Any]] = defaultdict(lambda: {"qty": 0.0, "amount": 0.0, "lines": 0})
+    total_cust_qty = 0.0
+    for r in si_rows:
+        ch = str(r.get("channel") or "")
+        if ch not in customer_channels:
+            continue
+        d = str(r.get("billdate") or r.get("BILLDATE") or "")[:10]
+        if not d or d < start or d > end:
+            continue
+        q = _fnum(r.get("qty") if "qty" in r else r.get("QTY")) or 0.0
+        if q == 0:
+            continue
+        acctno = r.get("ACCTNO") or r.get("acctno")
+        acctname = r.get("ACCTNAME") or r.get("acctname")
+        total_cust_qty += q
+        if _is_general_customer(acctno, acctname):
+            continue
+        name = (acctname or acctno or "").strip() or "(unknown)"
+        slot = by_cust[name]
+        slot["qty"] += q
+        amt = _fnum(r.get("amount") if "amount" in r else r.get("AMOUNT"))
+        if amt is None:
+            p = _fnum(r.get("price") if "price" in r else r.get("PRICE"))
+            amt = (p or 0.0) * q
+        slot["amount"] += amt
+        slot["lines"] += 1
+        slot["acctno"] = acctno
+    top = sorted(by_cust.items(), key=lambda kv: kv[1]["qty"], reverse=True)[:top_n]
+    return {
+        "window_days": days,
+        "from": start,
+        "to": end,
+        "customer_qty_total": round(total_cust_qty, 4),
+        "customers": [
+            {
+                "name": k,
+                "acctno": v.get("acctno"),
+                "qty": round(v["qty"], 4),
+                "amount": round(v["amount"], 2),
+                "pct_of_sales": round(v["qty"] / total_cust_qty * 100.0, 2) if total_cust_qty else None,
                 "lines": v["lines"],
             }
             for k, v in top
@@ -497,12 +596,25 @@ def build_fact_pack(snap: sqlite3.Connection, *, site: str, bcode: str, facts_as
         ):
             pimas_map[(str(r["src_site"] or "hq"), str(r["billno"] or ""))] = r
 
+    simas_map: dict[tuple[str, str], sqlite3.Row] = {}
+    if _has_table(snap, "simas"):
+        for r in snap.execute(
+            """
+            SELECT src_site, billno, acctno, acctname, billdate
+            FROM simas
+            WHERE billno IN (SELECT DISTINCT billno FROM sidet WHERE bcode=?)
+            """,
+            (bcode,),
+        ):
+            simas_map[(str(r["src_site"] or "hq"), str(r["billno"] or ""))] = r
+
     mix: dict[str, float] = defaultdict(float)
     by_src_qty: dict[str, float] = defaultdict(float)
     si_c: list[dict[str, Any]] = []
     for r in si_rows:
         src = _row_src_site(r)
         ch = channel_of(r["billno"], r["jourmode"], src_site=src)
+        hdr = simas_map.get((src, str(r["billno"] or "")))
         try:
             q = float(r["qty"] or 0)
             mix[ch] += q
@@ -520,6 +632,8 @@ def build_fact_pack(snap: sqlite3.Connection, *, site: str, bcode: str, facts_as
                 "JOURMODE": r["jourmode"],
                 "SRC_SITE": src,
                 "channel": ch,
+                "ACCTNO": (hdr["acctno"] if hdr else None),
+                "ACCTNAME": (hdr["acctname"] if hdr else None),
             }
         )
     if len(si_c) > MAX_LINES_PER_KIND:
@@ -531,6 +645,7 @@ def build_fact_pack(snap: sqlite3.Connection, *, site: str, bcode: str, facts_as
     for r in si_rows:
         src = _row_src_site(r)
         ch = channel_of(r["billno"], r["jourmode"], src_site=src)
+        hdr = simas_map.get((src, str(r["billno"] or "")))
         si_all.append(
             {
                 "billdate": r["billdate"],
@@ -538,6 +653,8 @@ def build_fact_pack(snap: sqlite3.Connection, *, site: str, bcode: str, facts_as
                 "price": r["price"],
                 "amount": r["amount"],
                 "channel": ch,
+                "ACCTNO": (hdr["acctno"] if hdr else None),
+                "ACCTNAME": (hdr["acctname"] if hdr else None),
             }
         )
     recent = _recent_sales_rollup(si_all, as_of=facts_as_of)
@@ -560,22 +677,23 @@ def build_fact_pack(snap: sqlite3.Connection, *, site: str, bcode: str, facts_as
                 "ACCTNAME": (hdr["acctname"] if hdr else None),
             }
         )
-    purchase_summary = _purchase_summary(pi_c)
+    # Full PI history for supplier rollups / margin (before soft-cap).
+    pi_all = list(pi_c)
+    purchase_summary = _purchase_summary(pi_all, as_of=facts_as_of, days=365, top_n=3)
+    customer_summary = _customer_summary(
+        si_all,
+        as_of=facts_as_of,
+        days=365,
+        top_n=3,
+        customer_channels={"hq_store", "online", "syp_store"},
+    )
     if len(pi_c) > MAX_LINES_PER_KIND:
         pi_c = pi_c[-MAX_LINES_PER_KIND:]
 
     stock = _stock_block(snap, bcode, master)
     margin = _margin_block(
         si_all,
-        pi_c if len(pi_rows) <= MAX_LINES_PER_KIND else [
-            {
-                "BILLDATE": r["billdate"],
-                "QTY": r["qty"],
-                "PRICE": r["price"],
-                "AMOUNT": r["amount"],
-            }
-            for r in pi_rows
-        ],
+        pi_all,
         as_of=facts_as_of,
         customer_channels={"hq_store", "online", "syp_store"},
     )
@@ -602,6 +720,7 @@ def build_fact_pack(snap: sqlite3.Connection, *, site: str, bcode: str, facts_as
             "lines": pi_c,
         },
         "purchase_summary": purchase_summary,
+        "customer_summary": customer_summary,
         "margin": margin,
     }
     facts["derived"] = build_derived(facts)
@@ -722,9 +841,9 @@ def generate_one(
         f"Site: {site}\nBCODE: {bcode}\n"
         f"facts_as_of: {facts_as_of}\ngenerated_at: {generated_at}\n"
         f"Facts:\n{json.dumps(facts, ensure_ascii=False, indent=2)}\n\n"
-        "Use Facts.derived as the origin for numbers. Override only with a stated reason. "
-        "This insight will be reused 14–30 days: standing policy, not a live PO vs snapshot QTYOH. "
-        "Produce analytical insight JSON only."
+        "Copy numbers from Facts.derived.dashboard (and derived flags/order/margin). "
+        "Do not invent or recalculate. Do not mention Transfer. "
+        "Dashboard style only — ai_action 1–2 Thai lines. Produce insight JSON only."
     )
     temp = float(prompt.get("temperature", 0.2))
     content, usage, elapsed = _spark_chat(model=model, system=system, user=user, temperature=temp)
@@ -733,6 +852,7 @@ def generate_one(
     except Exception as exc:
         insight = {
             "summary": "parse_error",
+            "ai_action": "parse_error — ไม่สามารถอ่านผลวิเคราะห์ได้",
             "sales_trend": "",
             "trend_label": "unknown",
             "channel_mix": "",
@@ -743,6 +863,7 @@ def generate_one(
             "anomalies": [f"json_parse_error: {exc}"],
             "dead_stock": "maybe",
             "dead_stock_reason": "model output was not valid JSON",
+            "order_status": "caution",
             "raw": (content or "")[:2000],
         }
 
@@ -753,7 +874,9 @@ def generate_one(
         facts.get("derived") or {},
     )
 
-    summary = insight.get("summary") if isinstance(insight, dict) else None
+    summary = None
+    if isinstance(insight, dict):
+        summary = insight.get("ai_action") or insight.get("summary")
     upsert_insight(
         site=site,
         bcode=bcode,

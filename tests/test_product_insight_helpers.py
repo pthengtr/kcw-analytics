@@ -4,13 +4,21 @@ from src.kcw.product_insight_channels import billtype_std, channel_of
 from src.kcw.product_insight_derived import (
     build_derived,
     classify_margin,
+    classify_order_status,
     classify_trend,
     flatten_insight_columns,
     pack_order,
     safe_holding_qty,
     suggested_cover_weeks,
 )
-from src.kcw.product_insight_generate import parse_window, build_fact_pack, _is_vendor_purchase
+from src.kcw.product_insight_generate import (
+    parse_window,
+    build_fact_pack,
+    _is_vendor_purchase,
+    _is_general_customer,
+    _purchase_summary,
+    _customer_summary,
+)
 from datetime import date
 import sqlite3
 
@@ -86,25 +94,89 @@ def test_flatten_prefers_derived_numbers():
                 "last_price": 69,
                 "last_date": "2026-08-01",
                 "last_src_site": "hq",
+                "suppliers": [{"name": "ACME", "qty": 50, "avg_price": 69}],
+            },
+            "customer_summary": {
+                "customers": [{"name": "ร้านดี", "qty": 40, "pct_of_sales": 33.3}],
             },
             "margin": {
                 "realized_pct_12m": 28.0,
                 "realized_pct_prior_12m": 32.0,
                 "buy_cost_change_pct_12m": 4.0,
                 "sell_price_change_pct_12m": 1.0,
+                "avg_buy_12m": 70.0,
+                "avg_sell_12m": 97.0,
             },
         }
     )
-    cols = flatten_insight_columns({}, derived)
+    assert "dashboard" in derived
+    dash = derived["dashboard"]
+    assert dash["sales"]["total_12m"] == 120
+    assert dash["channels_12m"]["hq"] == 80
+    assert dash["price_margin"]["avg_buy"] == 70.0
+    assert dash["order_status"] in ("no_order_needed", "should_order", "caution", "dead_stock")
+    assert len(dash["suppliers"]) == 1
+    assert len(dash["customers"]) == 1
+    # Model invents wrong numbers — flatten must keep derived.
+    cols = flatten_insight_columns(
+        {"typical_monthly_qty": 999, "purchase": {"order_ok": "no", "suggested_order_qty": 1}},
+        derived,
+    )
     assert cols["sales_qty_12m"] == 120
     assert cols["safe_holding_qty"] is not None
-    assert cols["order_ok"] == "yes"  # demand policy, not snap overstock
-    assert cols["suggested_order_qty"] == 20  # pack-round hold 13.8 → 2×10, not gap vs QTYOH 7
+    assert cols["order_ok"] == "yes"  # demand policy from derived, not model
+    assert cols["suggested_order_qty"] == 20  # pack-round hold, not model 1
     assert cols["rec_qtymin"] is not None and cols["rec_qtymin"] < cols["safe_holding_qty"]
-    assert cols["rec_transfer_qty_to_syp"] == 10  # SYP target pack, not 74-147 gap
+    assert cols["rec_transfer_qty_to_syp"] == 10
     assert cols["margin_pct_list"] == 30.0
     assert cols["trend_12m"] in ("flat", "growing", "declining", "hot", "dead", "lumpy", "unknown")
     assert cols["last_supplier"] == "ACME"
+
+
+def test_general_customer_and_summaries():
+    assert _is_general_customer("", "ใครก็ได้") is True
+    assert _is_general_customer("C01", "คุณลูกค้าทั่วไป lazada") is True
+    assert _is_general_customer("C02", "บจก. เกียรติชัย") is False
+    pi = [
+        {"BILLNO": "IV1", "BILLDATE": "2026-08-01", "QTY": 10, "PRICE": 50, "AMOUNT": 500,
+         "ACCTNAME": "ซัพ A", "ACCTNO": "S1"},
+        {"BILLNO": "TFV1", "BILLDATE": "2026-08-02", "QTY": 99, "PRICE": 1, "AMOUNT": 99,
+         "ACCTNAME": "สาขา", "ACCTNO": "X"},
+        {"BILLNO": "IV2", "BILLDATE": "2026-08-03", "QTY": 5, "PRICE": 60, "AMOUNT": 300,
+         "ACCTNAME": "ซัพ B", "ACCTNO": "S2"},
+    ]
+    ps = _purchase_summary(pi, as_of="2026-09-14", days=365, top_n=3)
+    assert len(ps["suppliers"]) == 2
+    assert ps["suppliers"][0]["name"] == "ซัพ A"
+    assert ps["suppliers"][0]["avg_price"] == 50.0
+    si = [
+        {"billdate": "2026-08-01", "qty": 8, "price": 100, "amount": 800, "channel": "hq_store",
+         "ACCTNO": "C1", "ACCTNAME": "ลูกค้า A"},
+        {"billdate": "2026-08-02", "qty": 20, "price": 100, "amount": 2000, "channel": "hq_store",
+         "ACCTNO": "", "ACCTNAME": "คุณลูกค้าทั่วไป"},
+        {"billdate": "2026-08-03", "qty": 4, "price": 100, "amount": 400, "channel": "online",
+         "ACCTNO": "C2", "ACCTNAME": "ลูกค้า B"},
+        {"billdate": "2026-08-04", "qty": 50, "price": 1, "amount": 50, "channel": "transfer",
+         "ACCTNO": "TF", "ACCTNAME": "โอน"},
+    ]
+    cs = _customer_summary(si, as_of="2026-09-14", days=365, top_n=3)
+    assert cs["customer_qty_total"] == 32  # excludes transfer
+    names = [c["name"] for c in cs["customers"]]
+    assert "ลูกค้า A" in names
+    assert "ลูกค้า B" in names
+    assert all("ลูกค้าทั่วไป" not in n for n in names)
+
+
+def test_classify_order_status():
+    assert classify_order_status(
+        dead_stock="yes", order_ok="no", company_qtyoh=100, safe_holding_qty=10, rec_qtymin=2
+    ) == "dead_stock"
+    assert classify_order_status(
+        dead_stock="no", order_ok="yes", company_qtyoh=50, safe_holding_qty=40, rec_qtymin=10
+    ) == "no_order_needed"
+    assert classify_order_status(
+        dead_stock="no", order_ok="yes", company_qtyoh=5, safe_holding_qty=40, rec_qtymin=10
+    ) == "should_order"
 
 
 def test_build_fact_pack_old_snap_shape():
@@ -129,6 +201,8 @@ def test_build_fact_pack_old_snap_shape():
     )
     facts = build_fact_pack(conn, site="hq", bcode="X1", facts_as_of="2026-09-14T00:00:00+07:00")
     assert "derived" in facts
+    assert "dashboard" in facts["derived"]
+    assert "customer_summary" in facts
     assert facts["recent"]["last_30d"]["customer_qty"] >= 0
     assert facts["derived"]["demand"]["qty_12m"] == 5
     conn.close()

@@ -95,6 +95,14 @@ def _init_snap_schema(conn: sqlite3.Connection) -> None:
           acctname TEXT,
           PRIMARY KEY (src_site, billno)
         );
+        CREATE TABLE IF NOT EXISTS simas (
+          src_site TEXT NOT NULL,
+          billno TEXT NOT NULL,
+          billdate TEXT,
+          acctno TEXT,
+          acctname TEXT,
+          PRIMARY KEY (src_site, billno)
+        );
         CREATE TABLE IF NOT EXISTS sidet (
           bcode TEXT NOT NULL,
           billno TEXT,
@@ -165,6 +173,14 @@ def _init_stock_pimas(conn: sqlite3.Connection) -> None:
           PRIMARY KEY (src_site, bcode)
         );
         CREATE TABLE IF NOT EXISTS pimas (
+          src_site TEXT NOT NULL,
+          billno TEXT NOT NULL,
+          billdate TEXT,
+          acctno TEXT,
+          acctname TEXT,
+          PRIMARY KEY (src_site, billno)
+        );
+        CREATE TABLE IF NOT EXISTS simas (
           src_site TEXT NOT NULL,
           billno TEXT NOT NULL,
           billdate TEXT,
@@ -399,6 +415,66 @@ def _extract_pimas(
     return n
 
 
+def _extract_simas(
+    conn: sqlite3.Connection,
+    eng,
+    *,
+    src_site: str,
+    cutoff: str,
+) -> int:
+    print(f"extracting {src_site} SIMAS customers …", flush=True)
+    sql = text(
+        """
+        SELECT LTRIM(RTRIM(BILLNO)) AS BILLNO,
+               BILLDATE,
+               LTRIM(RTRIM(ACCTNO)) AS ACCTNO,
+               LTRIM(RTRIM(ACCTNAME)) AS ACCTNAME
+        FROM dbo.SIMAS
+        WHERE BILLDATE >= :cutoff
+          AND LTRIM(RTRIM(BILLNO)) <> ''
+        """
+    )
+    n = 0
+    with eng.connect() as db:
+        result = db.execute(sql, {"cutoff": cutoff})
+        batch: list[tuple] = []
+        while True:
+            rows = result.fetchmany(5000)
+            if not rows:
+                break
+            for r in rows:
+                m = r._mapping
+                batch.append(
+                    (
+                        src_site,
+                        _ser(m["BILLNO"]),
+                        _ser(m["BILLDATE"]),
+                        _ser(m["ACCTNO"]),
+                        _ser(m["ACCTNAME"]),
+                    )
+                )
+            if len(batch) >= 10000:
+                conn.executemany(
+                    "INSERT OR REPLACE INTO simas(src_site,billno,billdate,acctno,acctname) "
+                    "VALUES (?,?,?,?,?)",
+                    batch,
+                )
+                n += len(batch)
+                print(f"  {src_site} simas rows={n}", flush=True)
+                batch.clear()
+                conn.commit()
+        if batch:
+            conn.executemany(
+                "INSERT OR REPLACE INTO simas(src_site,billno,billdate,acctno,acctname) "
+                "VALUES (?,?,?,?,?)",
+                batch,
+            )
+            n += len(batch)
+            conn.commit()
+    print(f"{src_site} simas_total={n}", flush=True)
+    return n
+
+
 def _icmas_tuple(m: dict, src_site: str) -> tuple:
     return (
         (m.get("BCODE") or "").strip(),
@@ -573,7 +649,8 @@ def run_snapshot(
             eng = mssql_engine(src)
             n_si, n_pi = _extract_si_pi(conn, eng, src_site=src, cutoff=cutoff)
             n_pm = _extract_pimas(conn, eng, src_site=src, cutoff=cutoff)
-            totals[src] = {"sidet": n_si, "pidet": n_pi, "pimas": n_pm}
+            n_sm = _extract_simas(conn, eng, src_site=src, cutoff=cutoff)
+            totals[src] = {"sidet": n_si, "pidet": n_pi, "pimas": n_pm, "simas": n_sm}
 
         bcodes = {
             r[0]
@@ -636,7 +713,7 @@ def run_snapshot(
 
 
 def enrich_snapshot(*, snap: str = "latest", sites: list[str] | None = None) -> Path:
-    """Patch an existing snap with dual-site ICMAS stock + PIMAS suppliers (no SI/PI re-extract)."""
+    """Patch an existing snap with dual-site ICMAS stock + PIMAS/SIMAS (no SI/PI re-extract)."""
     from src.kcw.product_insight_store import resolve_snap_id
 
     snap_id = resolve_snap_id(snap)
@@ -665,6 +742,7 @@ def enrich_snapshot(*, snap: str = "latest", sites: list[str] | None = None) -> 
         for src in sites:
             eng = mssql_engine(src)
             totals[f"{src}_pimas"] = _extract_pimas(conn, eng, src_site=src, cutoff=cutoff)
+            totals[f"{src}_simas"] = _extract_simas(conn, eng, src_site=src, cutoff=cutoff)
             write_master = src == (meta.get("site") or "hq")
             _extract_icmas_for_bcodes(
                 conn,
@@ -676,7 +754,7 @@ def enrich_snapshot(*, snap: str = "latest", sites: list[str] | None = None) -> 
                 write_stock=True,
             )
         n_st = conn.execute("SELECT src_site, COUNT(*) FROM icmas_stock GROUP BY 1").fetchall()
-        print(f"icmas_stock={dict(n_st)} pimas={totals}", flush=True)
+        print(f"icmas_stock={dict(n_st)} accounts={totals}", flush=True)
         conn.execute(
             "INSERT OR REPLACE INTO meta(key,value) VALUES (?,?)",
             ("enriched_at", utc_now_iso()),
@@ -691,7 +769,8 @@ def enrich_snapshot(*, snap: str = "latest", sites: list[str] | None = None) -> 
                 extra = {}
         extra["enriched_at"] = utc_now_iso()
         extra["icmas_stock"] = {k: v for k, v in n_st}
-        extra["pimas_enrich"] = totals
+        extra["pimas_enrich"] = {k: v for k, v in totals.items() if k.endswith("_pimas")}
+        extra["simas_enrich"] = {k: v for k, v in totals.items() if k.endswith("_simas")}
         meta_path.write_text(json.dumps(extra, indent=2), encoding="utf-8")
         print(f"enriched snap={out}", flush=True)
         return out
