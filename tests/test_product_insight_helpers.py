@@ -53,6 +53,24 @@ def test_parse_window():
     assert parse_window("2w", as_of=base).isoformat() == "2026-08-30"
 
 
+def test_snap_chunks_and_incremental_since():
+    from src.kcw.product_insight_snapshot import _chunks, _incremental_since
+
+    assert list(_chunks(["a", "b", "c", "d", "e"], 2)) == [["a", "b"], ["c", "d"], ["e"]]
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(
+        """
+        CREATE TABLE sidet (billdate TEXT);
+        CREATE TABLE pidet (billdate TEXT);
+        INSERT INTO sidet VALUES ('2026-09-10');
+        INSERT INTO pidet VALUES ('2026-09-12');
+        """
+    )
+    assert _incremental_since(conn, {}, lookback_days=1) == "2026-09-11"
+    assert _incremental_since(conn, {"facts_as_of": "2026-01-01"}, lookback_days=0) == "2026-09-12"
+    conn.close()
+
+
 def test_holding_and_pack():
     assert suggested_cover_weeks(30) == 4.0
     assert suggested_cover_weeks(8) == 6.0

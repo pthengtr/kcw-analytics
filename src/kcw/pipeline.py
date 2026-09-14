@@ -325,10 +325,39 @@ def cmd_backfill_statement_accounts(args: argparse.Namespace) -> int:
 
 
 def cmd_insight_snapshot(args: argparse.Namespace) -> int:
-    from src.kcw.product_insight_snapshot import enrich_snapshot, run_snapshot
+    from src.kcw.product_insight_snapshot import (
+        enrich_snapshot,
+        refresh_snapshot_incremental,
+        run_snapshot,
+    )
 
-    if getattr(args, "enrich_latest", False):
-        enrich_snapshot(snap="latest")
+    enrich_flags = (
+        bool(getattr(args, "enrich_latest", False)),
+        bool(getattr(args, "enrich_pimas", False)),
+        bool(getattr(args, "enrich_simas", False)),
+        bool(getattr(args, "enrich_stock", False)),
+    )
+    if any(enrich_flags):
+        # --enrich-latest alone → all three; any specific flag → only those.
+        specific = enrich_flags[1:]
+        if any(specific):
+            pimas, simas, stock = specific
+        else:
+            pimas = simas = stock = True
+        enrich_snapshot(
+            snap="latest",
+            pimas=pimas,
+            simas=simas,
+            stock=stock,
+            billno_scoped=not bool(getattr(args, "enrich_full_accounts", False)),
+        )
+        return 0
+
+    if getattr(args, "refresh_latest", False):
+        refresh_snapshot_incremental(
+            snap="latest",
+            lookback_days=int(getattr(args, "lookback_days", 1) or 1),
+        )
         return 0
 
     include_sites = None
@@ -660,7 +689,38 @@ def build_parser() -> argparse.ArgumentParser:
     isp.add_argument(
         "--enrich-latest",
         action="store_true",
-        help="Patch latest snap with HQ+SYP QTYOH/QTYMIN + PIMAS suppliers (no SI/PI re-extract)",
+        help="Patch latest snap: PIMAS+SIMAS (billno-scoped) + ICMAS stock (no full SI/PI)",
+    )
+    isp.add_argument(
+        "--enrich-pimas",
+        action="store_true",
+        help="With enrich: only refresh PIMAS (billno-scoped unless --enrich-full-accounts)",
+    )
+    isp.add_argument(
+        "--enrich-simas",
+        action="store_true",
+        help="With enrich: only refresh SIMAS (billno-scoped unless --enrich-full-accounts)",
+    )
+    isp.add_argument(
+        "--enrich-stock",
+        action="store_true",
+        help="With enrich: only refresh ICMAS stock (HQ+SYP QTYOH/QTYMIN)",
+    )
+    isp.add_argument(
+        "--enrich-full-accounts",
+        action="store_true",
+        help="With enrich: pull full cutoff PIMAS/SIMAS instead of snap billnos only",
+    )
+    isp.add_argument(
+        "--refresh-latest",
+        action="store_true",
+        help="Incremental in-place refresh of latest snap (recent SI/PI + accounts + stock)",
+    )
+    isp.add_argument(
+        "--lookback-days",
+        type=int,
+        default=1,
+        help="With --refresh-latest: re-pull from max(billdate)-N days (default 1)",
     )
     isp.set_defaults(func=cmd_insight_snapshot)
     igen = sub.add_parser(

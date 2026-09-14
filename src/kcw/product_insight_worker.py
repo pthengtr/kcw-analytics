@@ -354,9 +354,23 @@ def _maybe_refresh_snap(
             need = (now - prev.astimezone(now.tzinfo)) >= timedelta(days=snap_every_days)
 
     if need:
-        from src.kcw.product_insight_snapshot import run_snapshot
+        from src.kcw.product_insight_snapshot import refresh_snapshot_incremental, run_snapshot
 
-        print(f"worker: refreshing snapshot site={site} years={years}", flush=True)
+        # Prefer in-place incremental refresh when a snap already exists.
+        try:
+            existing = resolve_snap_id("latest")
+            if snap_path(existing).is_file():
+                print(
+                    f"worker: incremental snapshot refresh site={site} snap={existing}",
+                    flush=True,
+                )
+                out = refresh_snapshot_incremental(snap=existing, lookback_days=1)
+                snap_id = Path(out).parent.name if out is not None else existing
+                return snap_id, utc_now_iso()
+        except FileNotFoundError:
+            pass
+
+        print(f"worker: full snapshot site={site} years={years}", flush=True)
         out = run_snapshot(site=site, years=years, snap_id=None)
         if isinstance(out, dict):
             snap_id = out.get("snap_id") or resolve_snap_id("latest")
