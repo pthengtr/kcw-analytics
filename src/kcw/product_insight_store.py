@@ -94,6 +94,7 @@ INSIGHT_QUERY_COLUMNS: tuple[tuple[str, str], ...] = (
     ("order_unit", "TEXT"),
     ("order_unit_large", "TEXT"),
     ("last_supplier", "TEXT"),
+    ("last_supplier_acct", "TEXT"),
     ("last_buy_price", "REAL"),
     ("last_buy_date", "TEXT"),
     ("rec_qtymin", "REAL"),
@@ -181,6 +182,8 @@ def init_insights_schema(conn: sqlite3.Connection | None = None) -> None:
         CREATE INDEX IF NOT EXISTS pi_order_ok_idx ON product_insights (order_ok);
         CREATE INDEX IF NOT EXISTS pi_dead_idx ON product_insights (dead_stock);
         CREATE INDEX IF NOT EXISTS pi_stock_anom_idx ON product_insights (stock_anomaly);
+        CREATE INDEX IF NOT EXISTS pi_last_sup_acct_idx
+          ON product_insights (site, last_supplier_acct);
         """
     )
     conn.commit()

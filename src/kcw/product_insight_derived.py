@@ -388,6 +388,7 @@ def build_derived(facts: dict[str, Any]) -> dict[str, Any]:
             "ui1": master.get("UI1"),
             "ui2": master.get("UI2"),
             "last_supplier": purchase.get("last_supplier"),
+            "last_supplier_acct": purchase.get("last_supplier_acct"),
             "last_buy_price": purchase.get("last_price"),
             "last_buy_date": purchase.get("last_date"),
             "last_buy_src": purchase.get("last_src_site"),
@@ -495,6 +496,18 @@ def _enum(v: Any, fallback: Any, allowed: tuple[str, ...]) -> str | None:
     return fb if fb in allowed else None
 
 
+def _supplier_acct_from_list(suppliers: Any) -> str | None:
+    if not isinstance(suppliers, list):
+        return None
+    for s in suppliers:
+        if not isinstance(s, dict):
+            continue
+        acct = s.get("acctno")
+        if acct is not None and str(acct).strip():
+            return str(acct).strip()
+    return None
+
+
 def flatten_insight_columns(insight: dict[str, Any] | None, derived: dict[str, Any]) -> dict[str, Any]:
     """Map model JSON + derived facts onto product_insights query columns."""
     i = insight if isinstance(insight, dict) else {}
@@ -529,6 +542,11 @@ def flatten_insight_columns(insight: dict[str, Any] | None, derived: dict[str, A
         "order_unit": od.get("ui1") or purch.get("order_unit"),
         "order_unit_large": od.get("ui2") or purch.get("order_unit_large"),
         "last_supplier": od.get("last_supplier") or purch.get("last_supplier"),
+        "last_supplier_acct": (
+            od.get("last_supplier_acct")
+            or purch.get("last_supplier_acct")
+            or _supplier_acct_from_list(d.get("suppliers_12m"))
+        ),
         "last_buy_price": _num(od.get("last_buy_price"), purch.get("last_buy_price")),
         "last_buy_date": od.get("last_buy_date") or purch.get("last_buy_date"),
         "rec_qtymin": _num(fl.get("rec_qtymin"), icmas.get("rec_qtymin")),
