@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -780,6 +780,149 @@ def parse_peak_rows(
     return found
 
 
+@dataclass(frozen=True)
+class BankCredit:
+    statement_line_id: str
+    txn_date: date
+    amount: Decimal
+    description: str
+
+
+@dataclass(frozen=True)
+class BankDeposit:
+    statement_line_id: str
+    platform: str
+    shop: str
+    bank_date: date
+    amount: Decimal
+    period_from: date
+    period_to: date
+    payout_keys: tuple[str, ...]
+
+
+# One Lazada/Shopee/TikTok bank credit is a shop's settlement week, paid a few days later.
+_MAX_SETTLEMENT_SPAN_DAYS = 6
+_MAX_BANK_LAG_DAYS = 7
+
+
+def bank_platform(description: str) -> str | None:
+    text = (description or "").lower().replace("-", "").replace(" ", "")
+    if "lazada" in text:
+        return "lazada"
+    if "shopee" in text or "0048471012131" in text or "9825080752" in text:
+        return "shopee"
+    if "tiktok" in text or "0041521670041" in text or "0246993647915" in text:
+        return "tiktok"
+    return None
+
+
+def _payout_day(payout: Payout) -> date | None:
+    if payout.payout_at is None:
+        return None
+    return as_aware(payout.payout_at).date()
+
+
+def match_bank_deposits(
+    payouts: list[Payout],
+    credits: list[BankCredit],
+) -> list[BankDeposit]:
+    """Link a bank credit to the statement days that sum to the same amount.
+
+    A match is one shop, a window of at most seven calendar days, paid within
+    a week after the last statement day. Ambiguous sums are left unlinked.
+    """
+    grouped: dict[tuple[str, str], list[Payout]] = {}
+    for payout in payouts:
+        day = _payout_day(payout)
+        if payout.status != "transferred" or day is None:
+            continue
+        grouped.setdefault((payout.platform, payout.shop), []).append(payout)
+
+    windows: list[tuple[str, str, Decimal, date, date, tuple[str, ...]]] = []
+    for (platform, shop), items in grouped.items():
+        items.sort(key=lambda payout: _payout_day(payout) or date.min)
+        for start_i, first in enumerate(items):
+            total = Decimal("0")
+            keys: list[str] = []
+            first_day = _payout_day(first)
+            if first_day is None:
+                continue
+            for item in items[start_i:]:
+                day = _payout_day(item)
+                if day is None or (day - first_day).days > _MAX_SETTLEMENT_SPAN_DAYS:
+                    break
+                total += item.amount
+                keys.append(item.payout_key)
+                windows.append((platform, shop, _q(total), first_day, day, tuple(keys)))
+
+    ranked: list[tuple[int, date, BankDeposit]] = []
+    for credit in credits:
+        platform = bank_platform(credit.description)
+        if platform is None:
+            continue
+        amount = _q(credit.amount)
+        found: dict[tuple[str, ...], BankDeposit] = {}
+        for plat, shop, total, start, end, keys in windows:
+            if plat != platform or total != amount:
+                continue
+            lag = (credit.txn_date - end).days
+            if lag < 0 or lag > _MAX_BANK_LAG_DAYS:
+                continue
+            found[keys] = BankDeposit(
+                statement_line_id=credit.statement_line_id,
+                platform=platform,
+                shop=shop,
+                bank_date=credit.txn_date,
+                amount=amount,
+                period_from=start,
+                period_to=end,
+                payout_keys=keys,
+            )
+        if len(found) != 1:
+            continue
+        deposit = next(iter(found.values()))
+        ranked.append(((deposit.bank_date - deposit.period_to).days, deposit.bank_date, deposit))
+
+    ranked.sort(key=lambda item: (item[0], item[1], item[2].statement_line_id))
+    used_keys: set[str] = set()
+    chosen: list[BankDeposit] = []
+    for _lag, _bank_date, deposit in ranked:
+        if any(key in used_keys for key in deposit.payout_keys):
+            continue
+        used_keys.update(deposit.payout_keys)
+        chosen.append(deposit)
+    return chosen
+
+
+def load_bank_credits() -> list[BankCredit]:
+    import psycopg2
+
+    from src.kcw.tar import supabase_db_url
+
+    conn = psycopg2.connect(supabase_db_url(), sslmode="require")
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                select id::text, txn_date, amount, coalesce(description, '')
+                from bank.statement_lines
+                where direction = 'in'
+                  and description ~* 'lazada|shopee|tiktok|8471012131|9825080752|1521670041|6993647915'
+                """
+            )
+            return [
+                BankCredit(
+                    statement_line_id=row[0],
+                    txn_date=row[1],
+                    amount=as_decimal(row[2]),
+                    description=row[3],
+                )
+                for row in cur.fetchall()
+            ]
+    finally:
+        conn.close()
+
+
 def collect_peak_receipts(root: Path | None = None) -> list[PeakReceipt]:
     from openpyxl import load_workbook
 
@@ -808,6 +951,7 @@ def replace_links(
     payouts: list[Payout],
     links: list[BillLink],
     receipts: list[PeakReceipt] | None = None,
+    deposits: list[BankDeposit] | None = None,
 ) -> dict:
     import psycopg2
     from psycopg2.extras import Json, execute_values
@@ -882,6 +1026,24 @@ def replace_links(
         )
         for receipt in (receipts or [])
     ]
+    deposit_rows = [
+        (
+            deposit.statement_line_id,
+            deposit.platform,
+            deposit.shop,
+            deposit.bank_date,
+            deposit.amount,
+            deposit.period_from,
+            deposit.period_to,
+            len(deposit.payout_keys),
+        )
+        for deposit in (deposits or [])
+    ]
+    deposit_payout_rows = [
+        (deposit.statement_line_id, payout_key)
+        for deposit in (deposits or [])
+        for payout_key in deposit.payout_keys
+    ]
 
     conn = psycopg2.connect(supabase_db_url(), sslmode="require")
     try:
@@ -893,6 +1055,8 @@ def replace_links(
                       curated_kcw.online_payout_lines,
                       curated_kcw.online_order_bills,
                       curated_kcw.online_peak_receipts,
+                      curated_kcw.online_bank_deposit_payouts,
+                      curated_kcw.online_bank_deposits,
                       curated_kcw.online_payouts
                     """
                 )
@@ -944,6 +1108,29 @@ def replace_links(
                         receipt_rows,
                         page_size=1000,
                     )
+                if deposit_rows:
+                    execute_values(
+                        cur,
+                        """
+                        insert into curated_kcw.online_bank_deposits (
+                          statement_line_id, platform, shop, bank_date, amount,
+                          period_from, period_to, payout_count
+                        ) values %s
+                        """,
+                        deposit_rows,
+                        page_size=500,
+                    )
+                if deposit_payout_rows:
+                    execute_values(
+                        cur,
+                        """
+                        insert into curated_kcw.online_bank_deposit_payouts (
+                          statement_line_id, payout_key
+                        ) values %s
+                        """,
+                        deposit_payout_rows,
+                        page_size=1000,
+                    )
     finally:
         conn.close()
     return {
@@ -951,6 +1138,7 @@ def replace_links(
         "lines": len(line_rows),
         "bills": len(bill_rows),
         "receipts": len(receipt_rows),
+        "bank_deposits": len(deposit_rows),
     }
 
 
@@ -960,6 +1148,7 @@ def run_link(*, upload: bool = True, root: Path | None = None) -> dict:
     po_index = load_tad_po_index(simas) if simas.is_file() else {}
     links = link_bills(payouts, po_index) if po_index else []
     receipts = collect_peak_receipts(root)
+    deposits = match_bank_deposits(payouts, load_bank_credits()) if upload else []
     summary = {
         "payouts": len(payouts),
         "transferred": sum(1 for p in payouts if p.status == "transferred"),
@@ -968,10 +1157,11 @@ def run_link(*, upload: bool = True, root: Path | None = None) -> dict:
         "bills": len(links),
         "receipts": len(receipts),
         "receipts_issued": sum(1 for receipt in receipts if receipt.receipt_no),
+        "bank_deposits": len(deposits),
         "simas_po_keys": len(po_index),
         "uploaded": False,
     }
     if upload:
-        summary.update(replace_links(payouts, links, receipts))
+        summary.update(replace_links(payouts, links, receipts, deposits))
         summary["uploaded"] = True
     return summary

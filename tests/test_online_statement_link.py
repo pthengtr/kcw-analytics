@@ -1,12 +1,15 @@
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from openpyxl import Workbook
 
 from src.kcw.online_statement_link import (
+    BankCredit,
+    Payout,
     assign_tiktok,
     collect_payouts,
+    match_bank_deposits,
     match_order,
     parse_lazada_rows,
     parse_peak_rows,
@@ -167,3 +170,56 @@ def test_collect_reads_three_platforms(tmp_path):
     payouts = collect_payouts(tmp_path)
     platforms = {p.platform for p in payouts if p.status == "transferred"}
     assert platforms == {"lazada", "shopee", "tiktok"}
+
+
+def _day_payout(shop: str, day: date, amount: str) -> Payout:
+    return Payout(
+        platform="lazada",
+        shop=shop,
+        payout_at=datetime(day.year, day.month, day.day, tzinfo=BKK),
+        amount=Decimal(amount),
+        reference=day.isoformat(),
+        status="transferred",
+        source_file="Lazada/LAZ1/week.xlsx",
+        note="",
+    )
+
+
+def test_bank_credit_links_the_statement_week_that_sums_to_it():
+    days = [
+        (date(2026, 9, 14), "3781.64"),
+        (date(2026, 9, 15), "1746.76"),
+        (date(2026, 9, 16), "3032.49"),
+        (date(2026, 9, 17), "1191.58"),
+        (date(2026, 9, 18), "3701.51"),
+        (date(2026, 9, 19), "2838.19"),
+        (date(2026, 9, 20), "7198.23"),
+    ]
+    payouts = [_day_payout("LAZ1", day, amount) for day, amount in days]
+    payouts.append(_day_payout("LPNT", date(2026, 9, 20), "4064.55"))
+    deposits = match_bank_deposits(
+        payouts,
+        [
+            BankCredit("line-1", date(2026, 9, 23), Decimal("23490.40"), "BPS/017/01/Lazada Ltd./108682"),
+            BankCredit("line-2", date(2026, 9, 23), Decimal("4064.55"), "BPS/017/01/Lazada Ltd./108682"),
+        ],
+    )
+    by_line = {item.statement_line_id: item for item in deposits}
+    week = by_line["line-1"]
+    assert week.shop == "LAZ1"
+    assert week.period_from == date(2026, 9, 14)
+    assert week.period_to == date(2026, 9, 20)
+    assert len(week.payout_keys) == 7
+    assert by_line["line-2"].shop == "LPNT"
+
+
+def test_bank_credit_skips_an_amount_shared_by_two_shops():
+    payouts = [
+        _day_payout("LAZ1", date(2026, 9, 20), "100.00"),
+        _day_payout("LPNT", date(2026, 9, 20), "100.00"),
+    ]
+    deposits = match_bank_deposits(
+        payouts,
+        [BankCredit("line-1", date(2026, 9, 23), Decimal("100.00"), "Lazada Ltd.")],
+    )
+    assert deposits == []
