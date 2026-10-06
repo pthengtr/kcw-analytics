@@ -295,6 +295,17 @@ def cmd_tar_report(args: argparse.Namespace) -> int:
     return 0
 
 
+
+def cmd_link_online_statements(args: argparse.Namespace) -> int:
+    """Parse marketplace statements and link payouts to TAD bills."""
+    from src.kcw.online_statement_link import run_link
+
+    summary = run_link(upload=not args.no_upload)
+    for key, value in summary.items():
+        print(f"{key}={value}")
+    return 0
+
+
 def cmd_bank_statement_report(args: argparse.Namespace) -> int:
     """Monthly multi-account bank statement Excel (VAT-style layout)."""
     from src.kcw.bank_statement_report import (
@@ -668,6 +679,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Write updates to Supabase (default: dry-run only)",
     )
     bsa.set_defaults(func=cmd_backfill_statement_accounts)
+
+    ols = sub.add_parser(
+        "link-online-statements",
+        help=(
+            "Parse statement/online (Lazada, Shopee, TikTok) into payouts, "
+            "order refs, and expenses, then link order ids to HQ SIMAS TAD bills"
+        ),
+    )
+    ols.add_argument(
+        "--no-upload",
+        action="store_true",
+        help="Parse and match only; do not write curated_kcw",
+    )
+    ols.set_defaults(func=cmd_link_online_statements)
+
 
     isp = sub.add_parser(
         "insight-snapshot",
