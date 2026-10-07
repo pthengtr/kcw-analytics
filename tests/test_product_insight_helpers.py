@@ -151,6 +151,27 @@ def test_flatten_prefers_derived_numbers():
     assert cols["last_supplier"] == "ACME"
 
 
+def test_sub_unit_syp_holding_is_not_a_transfer():
+    derived = build_derived(
+        {
+            "recent": {
+                "last_30d": {"customer_qty": 0, "typical_monthly_qty": 0, "channel_qty": {}},
+                "last_90d": {"customer_qty": 0, "typical_monthly_qty": 0, "channel_qty": {}},
+                "last_12m": {
+                    "customer_qty": 1,
+                    "typical_monthly_qty": 1 / 12,
+                    "channel_qty": {"syp_store": 1},
+                },
+            },
+            "master": {"MTP2": 12, "PRICE1": 100, "COSTAVG": 70},
+            "stock": {"hq": {"qtyoh2": 5, "qtymin": 0}, "syp": {"qtyoh2": 0, "qtymin": 0}},
+        }
+    )
+    xfer = derived["transfer"]
+    assert xfer["syp_safe_holding"] < 1
+    assert xfer["rec_transfer_qty_to_syp"] == 0.0
+
+
 def test_general_customer_and_summaries():
     assert _is_general_customer("", "ใครก็ได้") is True
     assert _is_general_customer("C01", "คุณลูกค้าทั่วไป lazada") is True

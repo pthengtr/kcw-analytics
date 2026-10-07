@@ -233,9 +233,11 @@ def build_derived(facts: dict[str, Any]) -> dict[str, Any]:
     syp_packed = pack_order(syp_hold, mtp2)
     do_not_syp = qtymin_syp is not None and qtymin_syp < 0
     xfer_qty = None
-    if do_not_syp or (syp_monthly or 0) <= 0:
+    if do_not_syp or (syp_monthly or 0) <= 0 or syp_hold is None or syp_hold < 1:
+        # Sub-unit holdings (about one sale a year) are not a transfer batch.
+        # pack_order would otherwise round 0.xx up to 1, or to a full carton.
         xfer_qty = 0.0
-    elif syp_hold is not None:
+    else:
         # Typical HQ→SYP batch to bring SYP up to its target (not snap-gap).
         xfer_qty = syp_packed["order_qty"] if syp_packed["order_qty"] else syp_hold
 
@@ -397,7 +399,8 @@ def build_derived(facts: dict[str, Any]) -> dict[str, Any]:
             "formula": (
                 "SYP target = syp_store last_12m/12 × SYP cover weeks / 4.345, pack-rounded. "
                 "Typical HQ→SYP batch when live SYP QTYOH2 is below that target. "
-                "0 if SYP QTYMIN<0 or no syp_store sales. Do not use snap QTYOH gap."
+                "0 if SYP QTYMIN<0, no syp_store sales, or syp_safe_holding < 1. "
+                "Do not use snap QTYOH gap."
             ),
             "syp_monthly": _round(syp_monthly, 4),
             "syp_safe_holding": syp_hold,
