@@ -296,6 +296,16 @@ def cmd_tar_report(args: argparse.Namespace) -> int:
 
 
 
+def cmd_apply_online_statement_uploads(_args: argparse.Namespace) -> int:
+    """Copy pending เงินเข้าออนไลน์ uploads from storage into statement/online."""
+    from src.kcw.online_statement_link import apply_pending_uploads
+
+    summary = apply_pending_uploads()
+    for key, value in summary.items():
+        print(f"{key}={value}")
+    return 0
+
+
 def cmd_link_online_statements(args: argparse.Namespace) -> int:
     """Parse marketplace statements and link payouts to TAD bills."""
     from src.kcw.online_statement_link import run_link
@@ -679,6 +689,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Write updates to Supabase (default: dry-run only)",
     )
     bsa.set_defaults(func=cmd_backfill_statement_accounts)
+
+    apply_uploads = sub.add_parser(
+        "apply-online-statement-uploads",
+        help="Copy pending เงินเข้าออนไลน์ uploads into statement/online on Drive",
+    )
+    apply_uploads.set_defaults(func=cmd_apply_online_statement_uploads)
 
     ols = sub.add_parser(
         "link-online-statements",
