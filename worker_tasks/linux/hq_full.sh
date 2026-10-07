@@ -13,7 +13,26 @@ echo "=========================================="
 
 run_nb "00_archive_output.ipynb" fail
 run_nb "51_parts9_to_drive.ipynb" fail
-run_nb "20_vat_sales_nonvat_purchase_report.ipynb" fail
+echo
+echo "Running: RV catch-up (CLI)"
+RV_LOG="$LOGDIR/rv_catchup.log"
+if "$PY" -m src.kcw.pipeline rv --catch-up > "$RV_LOG" 2>&1; then
+  echo "DONE: RV catch-up CLI"
+else
+  echo "CLI RV catch-up failed"
+  tail -n 40 "$RV_LOG" || true
+  exit 1
+fi
+
+echo "Running: RV report (CLI)"
+RV_REPORT_LOG="$LOGDIR/rv_report.log"
+if "$PY" -m src.kcw.pipeline rv-report > "$RV_REPORT_LOG" 2>&1; then
+  echo "DONE: RV report CLI"
+else
+  echo "CLI RV report failed"
+  tail -n 40 "$RV_REPORT_LOG" || true
+  exit 1
+fi
 
 echo
 echo "Running: TAR catch-up (CLI)"

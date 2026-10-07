@@ -24,7 +24,7 @@ PARTS9 raw CSVs (Drive 01_raw / curated)
 | Line filters (shared) | `src/kcw/utils.py` | `get_vat_sales_lines`, `get_vat_purchase_lines`, TAXIC helpers |
 | TAR upstream | `src/kcw/tar.py` + `python -m src.kcw.pipeline tar --catch-up` | Fills `billgen.fin_*` |
 
-Related (not the formal tax books): `20_vat_sales_nonvat_purchase_report.ipynb` — VAT sales whose last purchase was non-VAT → RV PDF/CSV.
+Related (not the formal tax books): `python -m src.kcw.pipeline rv --catch-up` then `rv-report` — VAT sales whose last purchase was non-VAT, stored in `billgen.fin_rv_lines` / `fin_3rv_lines`, PDFs under `04_outputs/05_RV`. Notebook 20 is no longer the daily numbering path.
 
 ## Reporting month
 
