@@ -1142,6 +1142,139 @@ def replace_links(
     }
 
 
+FORMAT_FOLDERS = {
+    "lazada": "Lazada",
+    "shopee": "Shopee",
+    "tiktok": "Tiktok",
+    "peak": "peak",
+}
+
+
+def upload_destination(root: Path, fmt: str, shop: str | None, filename: str) -> Path:
+    name = Path(filename).name
+    if name.startswith("~$") or not name.lower().endswith(".xlsx"):
+        raise ValueError("รองรับเฉพาะไฟล์ .xlsx")
+    folder = FORMAT_FOLDERS.get(fmt)
+    if folder is None:
+        raise ValueError("รูปแบบไม่รองรับ")
+    if fmt == "peak":
+        return root / "peak" / name
+    if not shop:
+        raise ValueError("ต้องระบุร้าน")
+    return root / folder / shop / name
+
+
+def workbook_parse_error(path: Path, fmt: str, shop: str | None) -> str | None:
+    from openpyxl import load_workbook
+
+    wb = load_workbook(path, read_only=True, data_only=True)
+    try:
+        source = path.name
+        if fmt == "lazada":
+            rows = _sheet_rows(wb, ("Transaction Overview",))
+            if not parse_lazada_rows(rows, shop=shop or "", source_file=source):
+                return "ไฟล์ไม่ใช่ Lazada Transaction Overview"
+        elif fmt == "shopee":
+            rows = _sheet_rows(wb, ("Transaction Report",))
+            if not parse_shopee_rows(rows, shop=shop or "", source_file=source):
+                return "ไฟล์ไม่ใช่ Shopee Transaction Report"
+        elif fmt == "tiktok":
+            orders, withdrawals = parse_tiktok_rows(
+                _sheet_rows(wb, ("รายละเอียดคำสั่งซื้อ", "Order details")),
+                _sheet_rows(wb, ("บันทึกการถอน", "Withdrawals")),
+                shop=shop or "",
+                source_file=source,
+            )
+            if not orders and not withdrawals:
+                return "ไฟล์ไม่ใช่ TikTok"
+        elif fmt == "peak":
+            rows = [tuple(row) for row in wb.active.iter_rows(values_only=True)]
+            if not parse_peak_rows(rows, source_file=f"peak/{source}"):
+                return "ไฟล์ไม่ใช่ Peak"
+        else:
+            return "รูปแบบไม่รองรับ"
+    finally:
+        wb.close()
+    return None
+
+
+def apply_pending_uploads(root: Path | None = None) -> dict:
+    """Copy pending kcw-v2 uploads into statement/online, then the link job can see them."""
+    import os
+    import urllib.request
+    from urllib.parse import quote
+
+    import psycopg2
+
+    from src.kcw.tar import supabase_db_url
+
+    root = root or statement_root()
+    base = (os.getenv("SUPABASE_URL") or "").rstrip("/")
+    key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_SERVICE_KEY") or ""
+    if not base or not key:
+        raise RuntimeError("Missing SUPABASE_URL or service role key")
+
+    conn = psycopg2.connect(supabase_db_url(), sslmode="require")
+    applied = 0
+    rejected = 0
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                select id::text, format, shop, original_filename, storage_path
+                from curated_kcw.online_statement_uploads
+                where status = 'pending'
+                order by created_at
+                """
+            )
+            pending = cur.fetchall()
+        for upload_id, fmt, shop, filename, storage_path in pending:
+            url = f"{base}/storage/v1/object/online-statements/{quote(storage_path, safe='/')}"
+            request = urllib.request.Request(
+                url,
+                headers={"Authorization": f"Bearer {key}", "apikey": key},
+            )
+            with urllib.request.urlopen(request, timeout=120) as response:
+                payload = response.read()
+            dest = upload_destination(root, fmt, shop, filename)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            temporary = dest.with_name(f".{dest.name}.upload")
+            temporary.write_bytes(payload)
+            try:
+                error = workbook_parse_error(temporary, fmt, shop)
+            except Exception as exc:
+                error = str(exc)
+            if error:
+                temporary.unlink(missing_ok=True)
+                with conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            update curated_kcw.online_statement_uploads
+                            set status = 'rejected', error_message = %s, applied_at = now()
+                            where id = %s::uuid
+                            """,
+                            (error[:500], upload_id),
+                        )
+                rejected += 1
+                continue
+            temporary.replace(dest)
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        update curated_kcw.online_statement_uploads
+                        set status = 'applied', error_message = null, applied_at = now()
+                        where id = %s::uuid
+                        """,
+                        (upload_id,),
+                    )
+            applied += 1
+    finally:
+        conn.close()
+    return {"uploads_applied": applied, "uploads_rejected": rejected}
+
+
 def run_link(*, upload: bool = True, root: Path | None = None) -> dict:
     payouts = collect_payouts(root)
     simas = simas_csv_path()

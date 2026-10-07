@@ -15,6 +15,8 @@ from src.kcw.online_statement_link import (
     parse_peak_rows,
     parse_shopee_rows,
     parse_tiktok_rows,
+    upload_destination,
+    workbook_parse_error,
 )
 
 BKK = ZoneInfo("Asia/Bangkok")
@@ -223,3 +225,76 @@ def test_bank_credit_skips_an_amount_shared_by_two_shops():
         [BankCredit("line-1", date(2026, 9, 23), Decimal("100.00"), "Lazada Ltd.")],
     )
     assert deposits == []
+
+
+def _save(path, sheets: dict[str, list[tuple]]) -> None:
+    wb = Workbook()
+    first = True
+    for name, rows in sheets.items():
+        ws = wb.active if first else wb.create_sheet(name)
+        if first:
+            ws.title = name
+            first = False
+        for row in rows:
+            ws.append(row)
+    wb.save(path)
+
+
+def test_upload_destination_uses_the_drive_shop_folder(tmp_path):
+    assert upload_destination(tmp_path, "lazada", "LAZ1", "LAZ1 week.xlsx") == tmp_path / "Lazada" / "LAZ1" / "LAZ1 week.xlsx"
+    assert upload_destination(tmp_path, "peak", None, "Shopee_KC.xlsx") == tmp_path / "peak" / "Shopee_KC.xlsx"
+
+
+def test_workbook_parse_accepts_and_rejects_each_format(tmp_path):
+    lazada = tmp_path / "laz.xlsx"
+    _save(lazada, {
+        "Transaction Overview": [
+            ("Amount", "Statement", "Paid Status", "Order No.", "Fee Name", "Transaction Type"),
+            (10, "20 Sep 2026 - 20 Sep 2026", "paid", "1118594800859773", "Item Price Credit", "Orders-Sales"),
+        ]
+    })
+    assert workbook_parse_error(lazada, "lazada", "LAZ1") is None
+    bad = tmp_path / "bad-laz.xlsx"
+    _save(bad, {"Sheet1": [("hello",)]})
+    assert workbook_parse_error(bad, "lazada", "LAZ1")
+
+    shopee = tmp_path / "sp.xlsx"
+    _save(shopee, {
+        "Transaction Report": [
+            ("รายงาน",),
+            ("วันที่", "ประเภทการทำธุรกรรม", "คำอธิบาย", "รหัสคำสั่งซื้อ", "รูปแบบธุรกรรม", "จำนวนเงิน", "สถานะ", "ยอด"),
+            ("2026-09-15 01:45:10", "การถอนเงิน", "การถอนเงินอัตโนมัติ", "-", "เงินออก", -10, "ทำรายการสำเร็จ", 0),
+        ]
+    })
+    assert workbook_parse_error(shopee, "shopee", "SP") is None
+    bad_sp = tmp_path / "bad-sp.xlsx"
+    _save(bad_sp, {"Transaction Report": [("วันที่", "อย่างอื่น")]})
+    assert workbook_parse_error(bad_sp, "shopee", "SP")
+
+    tiktok = tmp_path / "tt.xlsx"
+    _save(tiktok, {
+        "รายละเอียดคำสั่งซื้อ": [
+            ("หมายเลขคำสั่งซื้อ/การปรับ", "ประเภทธุรกรรม", "เวลาที่ชำระคำสั่งซื้อ", "ยอดการชำระเงินทั้งหมด", "รายได้ทั้งหมด", "ค่าธรรมเนียมทั้งหมด"),
+            ("585982682407208429", "คำสั่งซื้อ", "2026/09/09", 80, 100, -20),
+        ],
+        "บันทึกการถอน": [
+            ("ประเภทธุรกรรม", "ID อ้างอิง", "เวลาส่งคำขอ", "จำนวน", "สถานะ", "เวลาที่สำเร็จ", "บัญชีธนาคาร"),
+            ("Withdrawal", "3701", "2026/09/09", -80, "Transferred", "2026/09/09", "********1139"),
+        ],
+    })
+    assert workbook_parse_error(tiktok, "tiktok", "ICE") is None
+    bad_tt = tmp_path / "bad-tt.xlsx"
+    _save(bad_tt, {"Sheet1": [("hello",)]})
+    assert workbook_parse_error(bad_tt, "tiktok", "ICE")
+
+    peak = tmp_path / "Shopee_KC.xlsx"
+    _save(peak, {
+        "รายการคำสั่งซื้อ": [
+            ("#", "วันที่คำสั่งซื้อ", "เลขที่คำสั่งซื้อ", "มูลค่าคำสั่งซื้อ", "สถานะ", "วันที่ออกเอกสาร", "เลขที่เอกสาร", "สถานะเอกสาร", "มูลค่าเอกสาร", "", "แพลตฟอร์ม : ", "Shopee"),
+            ("1", "01/09/2026", "260901U5BDSGN4", "1236", "สำเร็จ", "01/09/2026", "RT-20260900044", "รับชำระแล้ว", "1236", "", "ชื่อร้าน : ", "KC Industry"),
+        ]
+    })
+    assert workbook_parse_error(peak, "peak", None) is None
+    bad_peak = tmp_path / "bad-peak.xlsx"
+    _save(bad_peak, {"Sheet1": [("#", "เลขที่คำสั่งซื้อ", "เลขที่เอกสาร"), ("1", "260901U5BDSGN4", "RT-1")]})
+    assert workbook_parse_error(bad_peak, "peak", None)
