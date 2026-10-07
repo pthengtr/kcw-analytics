@@ -44,8 +44,34 @@ REM 51 still builds curated facts/dims (and re-reads/writes HQ raw). Safe during
 call :run_nb "51_parts9_to_drive.ipynb" fail
 if errorlevel 1 goto :fail
 
-call :run_nb "20_vat_sales_nonvat_purchase_report.ipynb" fail
-if errorlevel 1 goto :fail
+echo.
+echo ------------------------------------------
+echo Running: RV catch-up (CLI)
+echo ------------------------------------------
+set "RV_LOG=%KCW_ANALYTICS_LOG_DIR%\rv_catchup.log"
+set "PYTHONPATH=%cd%;%PYTHONPATH%"
+"%PY%" -m src.kcw.pipeline rv --catch-up > "%RV_LOG%" 2>&1
+if %ERRORLEVEL% NEQ 0 (
+    echo CLI RV catch-up failed
+    echo Check log: "%RV_LOG%"
+    powershell -NoProfile -Command "Get-Content -LiteralPath '%RV_LOG%' -Tail 40 -ErrorAction SilentlyContinue"
+    goto :fail
+)
+echo DONE: RV catch-up CLI
+
+echo.
+echo ------------------------------------------
+echo Running: RV report (CLI)
+echo ------------------------------------------
+set "RV_REPORT_LOG=%KCW_ANALYTICS_LOG_DIR%\rv_report.log"
+"%PY%" -m src.kcw.pipeline rv-report > "%RV_REPORT_LOG%" 2>&1
+if %ERRORLEVEL% NEQ 0 (
+    echo CLI RV report failed
+    echo Check log: "%RV_REPORT_LOG%"
+    powershell -NoProfile -Command "Get-Content -LiteralPath '%RV_REPORT_LOG%' -Tail 40 -ErrorAction SilentlyContinue"
+    goto :fail
+)
+echo DONE: RV report CLI
 
 REM Prefer CLI catch-up (idempotent). Falls back to notebook if CLI fails.
 echo.

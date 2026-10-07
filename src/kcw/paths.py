@@ -127,6 +127,11 @@ def tar_output_dir(kind: str = "TAR") -> Path:
     return outputs_dir() / "06_TAR" / kind
 
 
+def rv_output_dir(kind: str = "RV") -> Path:
+    """kind: RV | 3RV. Month folders stay unpadded (RV_2026_10), matching notebook 20."""
+    return outputs_dir() / "05_RV" / kind
+
+
 def log_dir() -> Path:
     env = os.getenv("KCW_ANALYTICS_LOG_DIR")
     if env:

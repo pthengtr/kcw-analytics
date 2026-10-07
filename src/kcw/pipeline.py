@@ -271,6 +271,70 @@ def cmd_tar(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_rv(args: argparse.Namespace) -> int:
+    from src.kcw.rv import (
+        delete_fin_for_day,
+        load_raw_csvs,
+        prepare_eligible_frames,
+        run_bill_generation_for_day,
+        run_catchup,
+        supabase_db_url,
+    )
+
+    if args.reprocess:
+        delete_fin_for_day(args.reprocess)
+        data = load_raw_csvs()
+        hq, syp = prepare_eligible_frames(data)
+        run_bill_generation_for_day(
+            args.reprocess,
+            hq_eligible=hq,
+            syp_eligible=syp,
+            skip_if_done=False,
+        )
+        return 0
+
+    if args.catch_up or args.date is None:
+        run_catchup(
+            start_date=args.start,
+            end_date=args.end or args.date,
+            skip_if_done=not args.force,
+        )
+        return 0
+
+    from src.kcw.rv import adopt_issued_month
+
+    adopt_issued_month(args.date)
+    data = load_raw_csvs()
+    hq, syp = prepare_eligible_frames(data)
+    run_bill_generation_for_day(
+        args.date,
+        hq_eligible=hq,
+        syp_eligible=syp,
+        db_url=supabase_db_url(),
+        skip_if_done=not args.force,
+    )
+    return 0
+
+
+def cmd_rv_report(args: argparse.Namespace) -> int:
+    from src.kcw.rv_report import run_rv_reports
+
+    summary = run_rv_reports(
+        args.start or args.date,
+        args.end or args.date,
+        prune_stale=not args.keep_stale,
+    )
+    print(f"[rv-report] done days={len(summary['days'])} pruned={len(summary['pruned'])}")
+    for row in summary["days"]:
+        print(
+            f"  {row['date']} hq_rv={row['hq_rv']} syp_rv={row['syp_rv']} "
+            f"pdf_written={row['hq_pdf_written'] + row['syp_pdf_written']}"
+        )
+    for path in summary["pruned"]:
+        print(f"  pruned {path}")
+    return 0
+
+
 def cmd_tar_report(args: argparse.Namespace) -> int:
     from src.kcw.tar_report import run_tar_reports
 
@@ -655,6 +719,33 @@ def build_parser() -> argparse.ArgumentParser:
         help="Leave leftover PDFs in the month folder",
     )
     tr.set_defaults(func=cmd_tar_report)
+
+    rv = sub.add_parser("rv", help="RV/3RV catch-up or single day (separate from TAR)")
+    rv.add_argument("--catch-up", action="store_true", help="Process missing days (default if no --date)")
+    rv.add_argument("--date", help="Single day YYYY-MM-DD")
+    rv.add_argument("--start", help="Catch-up start override YYYY-MM-DD")
+    rv.add_argument("--end", help="Catch-up end override YYYY-MM-DD")
+    rv.add_argument("--force", action="store_true", help="Do not skip-if-done")
+    rv.add_argument(
+        "--reprocess",
+        metavar="YYYY-MM-DD",
+        help="Delete fin_rv_* for day then regenerate (does not rewind seq)",
+    )
+    rv.set_defaults(func=cmd_rv)
+
+    rvr = sub.add_parser(
+        "rv-report",
+        help="Write RV/3RV PDFs+CSV from billgen.fin_rv_* (does not renumber)",
+    )
+    rvr.add_argument("--date", help="Single day YYYY-MM-DD (default: persisted days this month)")
+    rvr.add_argument("--start", help="Range start YYYY-MM-DD")
+    rvr.add_argument("--end", help="Range end YYYY-MM-DD")
+    rvr.add_argument(
+        "--keep-stale",
+        action="store_true",
+        help="Leave month-folder PDFs whose bill number is no longer in fin_rv_*",
+    )
+    rvr.set_defaults(func=cmd_rv_report)
 
     bsr = sub.add_parser(
         "bank-statement-report",
