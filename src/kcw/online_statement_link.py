@@ -117,20 +117,6 @@ class Payout:
 
 
 @dataclass
-class PeakReceipt:
-    platform: str
-    order_id: str
-    receipt_no: str | None
-    receipt_date: str | None
-    receipt_status: str
-    receipt_amount: Decimal | None
-    order_status: str
-    order_amount: Decimal | None
-    shop_name: str
-    source_file: str
-
-
-@dataclass
 class BillLink:
     platform: str
     order_id: str
@@ -707,79 +693,6 @@ def _fees_json(fees: list[FeeLine]) -> list[dict]:
     return [{"name": fee.name, "amount": str(fee.amount)} for fee in fees]
 
 
-def _peak_platform(label: str, filename: str) -> str:
-    text = f"{label} {filename}".lower()
-    if "lazada" in text:
-        return "lazada"
-    if "shopee" in text:
-        return "shopee"
-    if "tiktok" in text or "tik tok" in text:
-        return "tiktok"
-    return ""
-
-
-def _peak_date(text: str) -> str | None:
-    parsed = _parse_date(text, ("%d/%m/%Y", "%Y-%m-%d", "%d/%m/%Y %H:%M:%S"))
-    if parsed is None:
-        return None
-    return parsed.date().isoformat()
-
-
-def _optional_amount(value: object) -> Decimal | None:
-    text = as_text(value)
-    if text in {"", "-"}:
-        return None
-    return as_decimal(value)
-
-
-def parse_peak_rows(
-    rows: list[tuple],
-    *,
-    source_file: str,
-) -> list[PeakReceipt]:
-    platform = ""
-    shop = ""
-    for row in rows[:40]:
-        if not row or len(row) < 12:
-            continue
-        label = as_text(row[10])
-        value = as_text(row[11])
-        if "แพลตฟอร์ม" in label and value:
-            platform = _peak_platform(value, source_file)
-        if "ชื่อร้าน" in label and value:
-            shop = value
-    if not platform:
-        platform = _peak_platform("", source_file)
-    if not platform:
-        return []
-
-    found: list[PeakReceipt] = []
-    for row in rows[1:]:
-        if not row or len(row) < 7:
-            continue
-        order_id = as_text(row[2])
-        if len(order_id) < 8 or not order_id.replace("-", "").isalnum():
-            continue
-        document = as_text(row[6]) if len(row) > 6 else ""
-        receipt_no = document if document.upper().startswith("RT-") else None
-        status = as_text(row[7]) if len(row) > 7 and receipt_no else document
-        found.append(
-            PeakReceipt(
-                platform=platform,
-                order_id=order_id,
-                receipt_no=receipt_no,
-                receipt_date=_peak_date(as_text(row[5])) if len(row) > 5 else None,
-                receipt_status=status,
-                receipt_amount=_optional_amount(row[8]) if len(row) > 8 else None,
-                order_status=as_text(row[4]) if len(row) > 4 else "",
-                order_amount=_optional_amount(row[3]) if len(row) > 3 else None,
-                shop_name=shop,
-                source_file=source_file,
-            )
-        )
-    return found
-
-
 @dataclass(frozen=True)
 class BankCredit:
     statement_line_id: str
@@ -923,34 +836,9 @@ def load_bank_credits() -> list[BankCredit]:
         conn.close()
 
 
-def collect_peak_receipts(root: Path | None = None) -> list[PeakReceipt]:
-    from openpyxl import load_workbook
-
-    root = root or statement_root()
-    folder = root / "peak"
-    if not folder.is_dir():
-        return []
-    chosen: dict[tuple[str, str], PeakReceipt] = {}
-    for path in sorted(folder.glob("*.xlsx")):
-        if path.name.startswith("~$"):
-            continue
-        wb = load_workbook(path, read_only=True, data_only=True)
-        try:
-            rows = [tuple(row) for row in wb.active.iter_rows(values_only=True)]
-        finally:
-            wb.close()
-        for receipt in parse_peak_rows(rows, source_file=f"peak/{path.name}"):
-            key = (receipt.platform, receipt.order_id)
-            current = chosen.get(key)
-            if current is None or (receipt.receipt_no and not current.receipt_no):
-                chosen[key] = receipt
-    return list(chosen.values())
-
-
 def replace_links(
     payouts: list[Payout],
     links: list[BillLink],
-    receipts: list[PeakReceipt] | None = None,
     deposits: list[BankDeposit] | None = None,
 ) -> dict:
     import psycopg2
@@ -1011,21 +899,6 @@ def replace_links(
         )
         for link in links
     ]
-    receipt_rows = [
-        (
-            receipt.platform,
-            receipt.order_id,
-            receipt.receipt_no,
-            receipt.receipt_date,
-            receipt.receipt_status or None,
-            receipt.receipt_amount,
-            receipt.order_status or None,
-            receipt.order_amount,
-            receipt.shop_name or None,
-            receipt.source_file,
-        )
-        for receipt in (receipts or [])
-    ]
     deposit_rows = [
         (
             deposit.statement_line_id,
@@ -1054,7 +927,6 @@ def replace_links(
                     truncate table
                       curated_kcw.online_payout_lines,
                       curated_kcw.online_order_bills,
-                      curated_kcw.online_peak_receipts,
                       curated_kcw.online_bank_deposit_payouts,
                       curated_kcw.online_bank_deposits,
                       curated_kcw.online_payouts
@@ -1096,18 +968,6 @@ def replace_links(
                         bill_rows,
                         page_size=1000,
                     )
-                if receipt_rows:
-                    execute_values(
-                        cur,
-                        """
-                        insert into curated_kcw.online_peak_receipts (
-                          platform, order_id, receipt_no, receipt_date, receipt_status,
-                          receipt_amount, order_status, order_amount, shop_name, source_file
-                        ) values %s
-                        """,
-                        receipt_rows,
-                        page_size=1000,
-                    )
                 if deposit_rows:
                     execute_values(
                         cur,
@@ -1137,7 +997,6 @@ def replace_links(
         "payouts": len(payout_rows),
         "lines": len(line_rows),
         "bills": len(bill_rows),
-        "receipts": len(receipt_rows),
         "bank_deposits": len(deposit_rows),
     }
 
@@ -1146,7 +1005,6 @@ FORMAT_FOLDERS = {
     "lazada": "Lazada",
     "shopee": "Shopee",
     "tiktok": "Tiktok",
-    "peak": "peak",
 }
 
 
@@ -1157,8 +1015,6 @@ def upload_destination(root: Path, fmt: str, shop: str | None, filename: str) ->
     folder = FORMAT_FOLDERS.get(fmt)
     if folder is None:
         raise ValueError("รูปแบบไม่รองรับ")
-    if fmt == "peak":
-        return root / "peak" / name
     if not shop:
         raise ValueError("ต้องระบุร้าน")
     return root / folder / shop / name
@@ -1187,10 +1043,6 @@ def workbook_parse_error(path: Path, fmt: str, shop: str | None) -> str | None:
             )
             if not orders and not withdrawals:
                 return "ไฟล์ไม่ใช่ TikTok"
-        elif fmt == "peak":
-            rows = [tuple(row) for row in wb.active.iter_rows(values_only=True)]
-            if not parse_peak_rows(rows, source_file=f"peak/{source}"):
-                return "ไฟล์ไม่ใช่ Peak"
         else:
             return "รูปแบบไม่รองรับ"
     finally:
@@ -1280,7 +1132,6 @@ def run_link(*, upload: bool = True, root: Path | None = None) -> dict:
     simas = simas_csv_path()
     po_index = load_tad_po_index(simas) if simas.is_file() else {}
     links = link_bills(payouts, po_index) if po_index else []
-    receipts = collect_peak_receipts(root)
     deposits = match_bank_deposits(payouts, load_bank_credits()) if upload else []
     summary = {
         "payouts": len(payouts),
@@ -1288,13 +1139,11 @@ def run_link(*, upload: bool = True, root: Path | None = None) -> dict:
         "pending": sum(1 for p in payouts if p.status == "pending"),
         "orders": sum(1 for p in payouts for line in p.lines if line.order_id),
         "bills": len(links),
-        "receipts": len(receipts),
-        "receipts_issued": sum(1 for receipt in receipts if receipt.receipt_no),
         "bank_deposits": len(deposits),
         "simas_po_keys": len(po_index),
         "uploaded": False,
     }
     if upload:
-        summary.update(replace_links(payouts, links, receipts, deposits))
+        summary.update(replace_links(payouts, links, deposits))
         summary["uploaded"] = True
     return summary

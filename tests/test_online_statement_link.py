@@ -12,7 +12,6 @@ from src.kcw.online_statement_link import (
     match_bank_deposits,
     match_order,
     parse_lazada_rows,
-    parse_peak_rows,
     parse_shopee_rows,
     parse_tiktok_rows,
     upload_destination,
@@ -115,25 +114,6 @@ def test_po_match_prefers_exact_then_head_trim():
     assert match_order("1118594800859773", index)[0] == "drop_front_2"
     assert match_order("585982682407208429", index)[0] == "drop_front_3"
     assert match_order("9999999999999999", index) is None
-
-
-def test_peak_receipt_uses_the_full_order_id():
-    rows = [
-        ("#", "วันที่คำสั่งซื้อ", "เลขที่คำสั่งซื้อ", "มูลค่าคำสั่งซื้อ", "สถานะ", "วันที่ออกเอกสาร", "เลขที่เอกสาร", "สถานะเอกสาร", "มูลค่าเอกสาร", "", "ชื่อรายงาน : ", "รายงาน"),
-        ("1", "01/09/2026", "260901U5BDSGN4", "1236", "สำเร็จ", "01/09/2026", "RT-20260900044", "รับชำระแล้ว", "1236", "", "แพลตฟอร์ม : ", "Shopee"),
-        ("2", "01/09/2026", "260901U0P6TEQ5", "841", "ยกเลิกคำสั่งซื้อ", "", "ยังไม่สร้างเอกสาร", "", "-", "", "ชื่อร้าน : ", "KC Industry"),
-        ("3", "02/09/2026", "1115959409780311", "630", "จัดส่งสำเร็จ", "02/09/2026", "RT-20260900005", "รับชำระแล้ว", "630", "", "", ""),
-    ]
-    receipts = parse_peak_rows(rows, source_file="peak/Shopee_KC Industry.xlsx")
-    by_order = {item.order_id: item for item in receipts}
-    issued = by_order["260901U5BDSGN4"]
-    assert issued.platform == "shopee"
-    assert issued.shop_name == "KC Industry"
-    assert issued.receipt_no == "RT-20260900044"
-    assert issued.receipt_date == "2026-09-01"
-    pending = by_order["260901U0P6TEQ5"]
-    assert pending.receipt_no is None
-    assert pending.receipt_status == "ยังไม่สร้างเอกสาร"
 
 
 def test_collect_reads_three_platforms(tmp_path):
@@ -242,7 +222,6 @@ def _save(path, sheets: dict[str, list[tuple]]) -> None:
 
 def test_upload_destination_uses_the_drive_shop_folder(tmp_path):
     assert upload_destination(tmp_path, "lazada", "LAZ1", "LAZ1 week.xlsx") == tmp_path / "Lazada" / "LAZ1" / "LAZ1 week.xlsx"
-    assert upload_destination(tmp_path, "peak", None, "Shopee_KC.xlsx") == tmp_path / "peak" / "Shopee_KC.xlsx"
 
 
 def test_workbook_parse_accepts_and_rejects_each_format(tmp_path):
@@ -286,15 +265,3 @@ def test_workbook_parse_accepts_and_rejects_each_format(tmp_path):
     bad_tt = tmp_path / "bad-tt.xlsx"
     _save(bad_tt, {"Sheet1": [("hello",)]})
     assert workbook_parse_error(bad_tt, "tiktok", "ICE")
-
-    peak = tmp_path / "Shopee_KC.xlsx"
-    _save(peak, {
-        "รายการคำสั่งซื้อ": [
-            ("#", "วันที่คำสั่งซื้อ", "เลขที่คำสั่งซื้อ", "มูลค่าคำสั่งซื้อ", "สถานะ", "วันที่ออกเอกสาร", "เลขที่เอกสาร", "สถานะเอกสาร", "มูลค่าเอกสาร", "", "แพลตฟอร์ม : ", "Shopee"),
-            ("1", "01/09/2026", "260901U5BDSGN4", "1236", "สำเร็จ", "01/09/2026", "RT-20260900044", "รับชำระแล้ว", "1236", "", "ชื่อร้าน : ", "KC Industry"),
-        ]
-    })
-    assert workbook_parse_error(peak, "peak", None) is None
-    bad_peak = tmp_path / "bad-peak.xlsx"
-    _save(bad_peak, {"Sheet1": [("#", "เลขที่คำสั่งซื้อ", "เลขที่เอกสาร"), ("1", "260901U5BDSGN4", "RT-1")]})
-    assert workbook_parse_error(bad_peak, "peak", None)
