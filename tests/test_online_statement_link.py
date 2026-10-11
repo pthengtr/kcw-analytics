@@ -9,11 +9,14 @@ from src.kcw.online_statement_link import (
     Payout,
     assign_tiktok,
     collect_payouts,
+    link_bills,
     match_bank_deposits,
     match_order,
     parse_lazada_rows,
+    parse_shopee_income_rows,
     parse_shopee_rows,
     parse_tiktok_rows,
+    reconcile_shopee_pickup_fees,
     upload_destination,
     workbook_parse_error,
 )
@@ -48,6 +51,131 @@ def test_shopee_withdrawal_collects_orders_and_fees():
     assert fees[0].net == Decimal("-50.00")
     assert sum((line.net for line in transferred[0].lines), Decimal("0")) == Decimal("300.00")
     assert pending[0].lines[0].order_id == "260910AAAAAA11"
+
+
+def test_shopee_income_keeps_each_fee_and_adjustment():
+    income = [
+        ("ชื่อผู้ใช้ (ผู้ขาย)", "จาก", "ถึง"),
+        ("kc.industry", "2026-09-14", "2026-09-25"),
+        ("ยอดรวม (฿)",),
+        (
+            "ลำดับที่",
+            "หมายเลขคำสั่งซื้อ",
+            "ช่องทางการชำระเงินของผู้ซื้อ",
+            "วันที่โอนชำระเงินสำเร็จ",
+            "สินค้าราคาปกติ",
+            "ค่าจัดส่งที่ชำระโดยผู้ซื้อ",
+            "ค่าจัดส่งที่ Shopee ชำระโดยชื่อของคุณ",
+            "ค่าคอมมิชชั่น",
+            "ค่าธุรกรรมการชำระเงิน",
+            "ค่าธรรมเนียมเติมเงินโฆษณาจากเงิน Escrow",
+            "โบนัสส่วนลดเครื่องเก่าแลกใหม่จากผู้ขาย",
+            "จำนวนเงินทั้งหมดที่โอนแล้ว (฿)",
+        ),
+        (
+            1,
+            "260911R83ACM85",
+            "เก็บเงินปลายทาง",
+            "2026-09-14",
+            1350,
+            38,
+            -38,
+            -159,
+            -45,
+            -15,
+            0,
+            1131,
+        ),
+    ]
+    adjustments = [
+        (
+            "ลำดับที่",
+            "วันที่โอนยอดเงินที่ปรับปรุง",
+            "ประเภทการปรับปรุง | คำอธิบาย",
+            "เหตุผลในการปรับปรุงยอดเงิน",
+            "ยอดที่ปรับปรุง",
+            "รหัสคำสั่งซื้อที่เกี่ยวข้อง",
+        ),
+        (1, "2026-09-19", "การคืนเงิน/คืนสินค้าหลังคำสั่งซื้อสำเร็จ", "", -360, "260908GSA520FV"),
+    ]
+    summary = [("จาก", "2026-09-14"), ("ถึง", "2026-09-25")]
+    payouts = parse_shopee_income_rows(
+        income,
+        adjustments,
+        summary,
+        shop="SP",
+        source_file="Shopee/SP/income.xlsx",
+    )
+    assert len(payouts) == 1
+    payout = payouts[0]
+    assert payout.reference == "2026-09-14 – 2026-09-25"
+    assert payout.amount == Decimal("771.00")
+    order = payout.lines[0]
+    assert order.order_id == "260911R83ACM85"
+    assert order.gross == Decimal("1388.00")
+    assert order.expense == Decimal("-257.00")
+    assert order.net == Decimal("1131.00")
+    assert {fee.name: fee.amount for fee in order.fees if fee.amount < 0} == {
+        "ค่าจัดส่งที่ Shopee ชำระโดยชื่อของคุณ": Decimal("-38.00"),
+        "ค่าคอมมิชชั่น": Decimal("-159.00"),
+        "ค่าธุรกรรมการชำระเงิน": Decimal("-45.00"),
+        "ค่าธรรมเนียมเติมเงินโฆษณาจากเงิน Escrow": Decimal("-15.00"),
+    }
+    refund = payout.lines[1]
+    assert refund.kind == "adjustment"
+    assert refund.order_id == "260908GSA520FV"
+    assert refund.net == Decimal("-360.00")
+
+
+def test_shopee_pickup_fee_aligns_income_total_with_the_bank():
+    payouts = parse_shopee_income_rows(
+        [
+            (
+                "ลำดับที่",
+                "หมายเลขคำสั่งซื้อ",
+                "วันที่โอนชำระเงินสำเร็จ",
+                "สินค้าราคาปกติ",
+                "ค่าคอมมิชชั่น",
+                "โบนัสส่วนลดเครื่องเก่าแลกใหม่จากผู้ขาย",
+                "จำนวนเงินทั้งหมดที่โอนแล้ว (฿)",
+            ),
+            (1, "260911R83ACM85", "2026-09-14", 1350, -219, 0, 1131),
+        ],
+        [],
+        [("จาก", "2026-09-14"), ("ถึง", "2026-09-25")],
+        shop="IAPS",
+        source_file="Shopee/IAPS/income.xlsx",
+    )
+    credits = [
+        BankCredit("line-1", date(2026, 9, 25), Decimal("1101.00"), "TR from 9825080752 Shopeepay"),
+        BankCredit("line-2", date(2026, 9, 25), Decimal("7021.00"), "TR from 9825080752 Shopeepay"),
+    ]
+    reconcile_shopee_pickup_fees(payouts, credits)
+    assert payouts[0].amount == Decimal("1101.00")
+    pickup = payouts[0].lines[-1]
+    assert pickup.fee_name == "Charging Pick up fee"
+    assert pickup.net == Decimal("-30.00")
+    deposits = match_bank_deposits(payouts, credits)
+    assert [item.statement_line_id for item in deposits] == ["line-1"]
+    assert deposits[0].shop == "IAPS"
+    assert deposits[0].amount == Decimal("1101.00")
+    links = link_bills(
+        payouts,
+        {
+            "260911R83ACM85": [
+                {
+                    "billno": "TAD1",
+                    "po": "260911R83ACM85",
+                    "bill_date": "2026-09-14",
+                    "aftertax": "1131",
+                    "acctname": "shop",
+                    "canceled": False,
+                }
+            ]
+        },
+    )
+    assert links[0].payout_key == payouts[0].payout_key
+    assert links[0].payout_key.endswith("|1101.00")
 
 
 def test_lazada_statement_is_the_payout():
@@ -246,6 +374,15 @@ def test_workbook_parse_accepts_and_rejects_each_format(tmp_path):
         ]
     })
     assert workbook_parse_error(shopee, "shopee", "SP") is None
+    income = tmp_path / "sp-income.xlsx"
+    _save(income, {
+        "Summary": [("จาก", "2026-09-14"), ("ถึง", "2026-09-25")],
+        "Income": [
+            ("ลำดับที่", "หมายเลขคำสั่งซื้อ", "วันที่โอนชำระเงินสำเร็จ", "สินค้าราคาปกติ", "ค่าคอมมิชชั่น", "โบนัสส่วนลดเครื่องเก่าแลกใหม่จากผู้ขาย", "จำนวนเงินทั้งหมดที่โอนแล้ว (฿)"),
+            (1, "260911R83ACM85", "2026-09-14", 1350, -219, 0, 1131),
+        ],
+    })
+    assert workbook_parse_error(income, "shopee", "SP") is None
     bad_sp = tmp_path / "bad-sp.xlsx"
     _save(bad_sp, {"Transaction Report": [("วันที่", "อย่างอื่น")]})
     assert workbook_parse_error(bad_sp, "shopee", "SP")
