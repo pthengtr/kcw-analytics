@@ -2,6 +2,9 @@
 
 Reads KCW-Data/kcw_analytics/01_raw/statement/online/{Lazada,Shopee,Tiktok}.
 Each payout is money that actually left the marketplace wallet for the bank.
+Shopee My Income workbooks (Summary / Income / Adjustment) carry the order
+fee columns the wallet export left out. Their released total still omits the
+30-baht pickup fee, so that fee is filled from the matching bank credit.
 Orders and fee lines inside that payout are matched to raw HQ SIMAS by the PO
 column: exact order id, or the order id with a short head/tail trimmed
 (Lazada drops the first 2 digits, TikTok the first 3, Shopee is exact).
@@ -62,6 +65,14 @@ def as_aware(value: datetime | None) -> datetime | None:
     if value.tzinfo is None:
         return value.replace(tzinfo=BKK)
     return value.astimezone(BKK)
+
+
+def _coerce_datetime(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        return as_aware(value)
+    if isinstance(value, date):
+        return as_aware(datetime(value.year, value.month, value.day))
+    return _parse_date(as_text(value), ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%Y/%m/%d"))
 
 
 def _parse_date(text: str, formats: tuple[str, ...]) -> datetime | None:
@@ -360,6 +371,324 @@ def _shopee_line(
     )
 
 
+# Shopee My Income: money columns that add up to จำนวนเงินทั้งหมดที่โอนแล้ว.
+_SHOPEE_MONEY_START = "สินค้าราคาปกติ"
+_SHOPEE_MONEY_END = "โบนัสส่วนลดเครื่องเก่าแลกใหม่จากผู้ขาย"
+_SHOPEE_NET_PREFIX = "จำนวนเงินทั้งหมดที่โอนแล้ว"
+_SHOPEE_INCOME_NOTE = "รายงานรายรับ Shopee พร้อมรายละเอียดค่าใช้จ่าย"
+# Wallet pickup fee is 30 baht per pickup and is absent from the income workbook.
+_SHOPEE_PICKUP_FEE = Decimal("30")
+_SHOPEE_MAX_PICKUP_FEE = Decimal("360")
+_SHOPEE_PICKUP_NAME = "Charging Pick up fee"
+
+
+def _header_map(header: list[str]) -> dict[str, int]:
+    found: dict[str, int] = {}
+    for index, name in enumerate(header):
+        if name and name not in found:
+            found[name] = index
+    return found
+
+
+def _row_header(row: tuple) -> list[str]:
+    return [as_text(cell) for cell in row]
+
+
+def _find_header(rows: list[tuple], required: tuple[str, ...]) -> tuple[int, list[str]] | None:
+    for index, row in enumerate(rows):
+        if not row:
+            continue
+        header = _row_header(row)
+        if all(any(cell == name or cell.startswith(name) for cell in header) for name in required):
+            return index, header
+    return None
+
+
+def _column(header: list[str], name: str) -> int | None:
+    for index, cell in enumerate(header):
+        if cell == name or cell.startswith(name):
+            return index
+    return None
+
+
+def _cell(row: tuple, index: int | None) -> object:
+    if index is None or index >= len(row):
+        return None
+    return row[index]
+
+
+def _summary_period(rows: list[tuple]) -> tuple[datetime | None, datetime | None]:
+    start = end = None
+    for row in rows:
+        if not row:
+            continue
+        label = as_text(row[0])
+        if label == "จาก":
+            start = _coerce_datetime(row[1] if len(row) > 1 else None)
+        elif label == "ถึง":
+            end = _coerce_datetime(row[1] if len(row) > 1 else None)
+    return start, end
+
+
+def _preamble_period(rows: list[tuple], header_at: int) -> tuple[datetime | None, datetime | None]:
+    for index, row in enumerate(rows[:header_at]):
+        labels = _row_header(row)
+        if "จาก" not in labels or "ถึง" not in labels or index + 1 >= header_at:
+            continue
+        values = rows[index + 1]
+        return (
+            _coerce_datetime(_cell(values, labels.index("จาก"))),
+            _coerce_datetime(_cell(values, labels.index("ถึง"))),
+        )
+    return None, None
+
+
+def _shopee_money_line(
+    row: tuple,
+    header: list[str],
+    *,
+    kind: str,
+    order_id: str,
+    fee_name: str,
+    detail: str,
+    txn_at: datetime | None,
+    net_value: object | None = None,
+) -> StatementLine | None:
+    start = _column(header, _SHOPEE_MONEY_START)
+    end = _column(header, _SHOPEE_MONEY_END)
+    if start is None or end is None or end < start:
+        return None
+    fees: list[FeeLine] = []
+    gross = Decimal("0")
+    expense = Decimal("0")
+    for index in range(start, end + 1):
+        if index >= len(header) or not header[index]:
+            continue
+        amount = as_decimal(_cell(row, index))
+        if amount == 0:
+            continue
+        fees.append(FeeLine(name=header[index], amount=amount))
+        if amount > 0:
+            gross += amount
+        else:
+            expense += amount
+    net_col = _column(header, _SHOPEE_NET_PREFIX)
+    net = as_decimal(net_value) if net_value is not None else as_decimal(_cell(row, net_col))
+    if net == 0 and not fees:
+        return None
+    return StatementLine(
+        kind=kind,
+        order_id=order_id,
+        fee_name=fee_name,
+        detail=detail,
+        gross=_q(gross),
+        expense=_q(expense),
+        net=_q(net),
+        fees=fees,
+        txn_at=txn_at,
+    )
+
+
+def parse_shopee_income_rows(
+    income_rows: list[tuple],
+    adjustment_rows: list[tuple] | None = None,
+    summary_rows: list[tuple] | None = None,
+    *,
+    shop: str,
+    source_file: str,
+) -> list[Payout]:
+    """Parse a Shopee My Income workbook into one settlement payout.
+
+    Income rows keep each fee column. Adjustment rows are wallet corrections
+    in the same period. The pickup fee is not in this file.
+    """
+    found = _find_header(income_rows, ("ลำดับที่", "หมายเลขคำสั่งซื้อ", _SHOPEE_NET_PREFIX))
+    if found is None:
+        return []
+    header_at, header = found
+    if _column(header, _SHOPEE_MONEY_START) is None or _column(header, _SHOPEE_MONEY_END) is None:
+        return []
+
+    order_at = _column(header, "หมายเลขคำสั่งซื้อ")
+    when_at = _column(header, "วันที่โอนชำระเงินสำเร็จ")
+    pay_at = _column(header, "ช่องทางการชำระเงินของผู้ซื้อ")
+    lines: list[StatementLine] = []
+    for row in income_rows[header_at + 1 :]:
+        if not row or not as_text(row[0]).isdigit():
+            continue
+        order_id = as_text(_cell(row, order_at))
+        if order_id in {"", "-"}:
+            order_id = ""
+        line = _shopee_money_line(
+            row,
+            header,
+            kind="order" if order_id else "adjustment",
+            order_id=order_id,
+            fee_name="รายรับจากคำสั่งซื้อ" if order_id else "รายการปรับปรุง",
+            detail=as_text(_cell(row, pay_at)),
+            txn_at=_coerce_datetime(_cell(row, when_at)),
+        )
+        if line is not None:
+            lines.append(line)
+
+    adjustment_header = _find_header(
+        adjustment_rows or [],
+        ("ลำดับที่", "ยอดที่ปรับปรุง", "รหัสคำสั่งซื้อที่เกี่ยวข้อง"),
+    )
+    if adjustment_header is not None:
+        adj_at, adj_header = adjustment_header
+        amount_at = _column(adj_header, "ยอดที่ปรับปรุง")
+        order_at = _column(adj_header, "รหัสคำสั่งซื้อที่เกี่ยวข้อง")
+        type_at = _column(adj_header, "ประเภทการปรับปรุง")
+        reason_at = _column(adj_header, "เหตุผลในการปรับปรุงยอดเงิน")
+        when_at = _column(adj_header, "วันที่โอนยอดเงินที่ปรับปรุง")
+        for row in (adjustment_rows or [])[adj_at + 1 :]:
+            if not row or not as_text(row[0]).isdigit():
+                continue
+            amount = as_decimal(_cell(row, amount_at))
+            if amount == 0:
+                continue
+            fee_name = as_text(_cell(row, type_at)) or "รายการปรับปรุง"
+            order_id = as_text(_cell(row, order_at))
+            if order_id in {"", "-"}:
+                order_id = ""
+            lines.append(
+                StatementLine(
+                    kind="adjustment",
+                    order_id=order_id,
+                    fee_name=fee_name,
+                    detail=as_text(_cell(row, reason_at)),
+                    gross=amount if amount > 0 else Decimal("0"),
+                    expense=amount if amount < 0 else Decimal("0"),
+                    net=amount,
+                    fees=[FeeLine(name=fee_name, amount=amount)],
+                    txn_at=_coerce_datetime(_cell(row, when_at)),
+                )
+            )
+    if not lines:
+        return []
+
+    start, end = _summary_period(summary_rows or [])
+    if start is None or end is None:
+        preamble_start, preamble_end = _preamble_period(income_rows, header_at)
+        start = start or preamble_start
+        end = end or preamble_end
+    payout_at = end or start or max((line.txn_at for line in lines if line.txn_at), default=None)
+    start_text = start.date().isoformat() if start else ""
+    end_text = end.date().isoformat() if end else ""
+    reference = f"{start_text} – {end_text}".strip(" –") or "รายงานรายรับ"
+    amount = _q(sum((line.net for line in lines), Decimal("0")))
+    return [
+        Payout(
+            platform="shopee",
+            shop=shop,
+            payout_at=payout_at,
+            amount=amount,
+            reference=reference,
+            status="transferred",
+            source_file=source_file,
+            note=_SHOPEE_INCOME_NOTE,
+            lines=lines,
+        )
+    ]
+
+
+def parse_shopee_workbook(wb, *, shop: str, source_file: str) -> list[Payout]:
+    income = parse_shopee_income_rows(
+        _sheet_rows(wb, ("Income",)),
+        _sheet_rows(wb, ("Adjustment",)),
+        _sheet_rows(wb, ("Summary",)),
+        shop=shop,
+        source_file=source_file,
+    )
+    if income:
+        return income
+    return parse_shopee_rows(
+        _sheet_rows(wb, ("Transaction Report",)),
+        shop=shop,
+        source_file=source_file,
+    )
+
+
+def reconcile_shopee_pickup_fees(payouts: list[Payout], credits: list[BankCredit]) -> None:
+    """Fill the pickup fee the income report omits, when one bank credit fits.
+
+    The credit is the released total minus 30 baht per pickup, paid within a
+    week of the period end. An exact payout amount keeps the credit for the
+    normal matcher. Ambiguous gaps are left unchanged.
+    """
+    reserved = {
+        _q(payout.amount)
+        for payout in payouts
+        if payout.platform == "shopee" and payout.status == "transferred"
+    }
+    shopee_credits = [
+        credit
+        for credit in credits
+        if bank_platform(credit.description) == "shopee" and _q(credit.amount) not in reserved
+    ]
+    candidates = [
+        payout
+        for payout in payouts
+        if payout.platform == "shopee"
+        and payout.status == "transferred"
+        and payout.note.startswith("รายงานรายรับ")
+    ]
+    pairs: list[tuple[Decimal, int, Payout, BankCredit]] = []
+    for payout in candidates:
+        day = _payout_day(payout)
+        if day is None:
+            continue
+        for credit in shopee_credits:
+            diff = _q(payout.amount - credit.amount)
+            if diff <= 0 or diff > _SHOPEE_MAX_PICKUP_FEE or diff % _SHOPEE_PICKUP_FEE != 0:
+                continue
+            lag = (credit.txn_date - day).days
+            if lag < 0 or lag > _MAX_BANK_LAG_DAYS:
+                continue
+            pairs.append((diff, lag, payout, credit))
+
+    by_payout: dict[int, list[tuple[Decimal, int, Payout, BankCredit]]] = {}
+    by_credit: dict[str, list[tuple[Decimal, int, Payout, BankCredit]]] = {}
+    for item in pairs:
+        by_payout.setdefault(id(item[2]), []).append(item)
+        by_credit.setdefault(item[3].statement_line_id, []).append(item)
+
+    def unique_best(
+        groups: dict,
+    ) -> dict:
+        chosen = {}
+        for key, items in groups.items():
+            items.sort(key=lambda pair: (pair[0], pair[1], pair[3].statement_line_id))
+            best = items[0]
+            if sum(1 for pair in items if pair[0] == best[0]) != 1:
+                continue
+            chosen[key] = best
+        return chosen
+
+    payout_best = unique_best(by_payout)
+    credit_best = unique_best(by_credit)
+    for payout_id, best in payout_best.items():
+        diff, _lag, payout, credit = best
+        other = credit_best.get(credit.statement_line_id)
+        if other is None or other[2] is not payout or id(other[2]) != payout_id:
+            continue
+        payout.lines.append(
+            StatementLine(
+                kind="adjustment",
+                order_id="",
+                fee_name=_SHOPEE_PICKUP_NAME,
+                detail="ค่าบริการรับพัสดุที่รายงานรายรับไม่ได้แสดง",
+                gross=Decimal("0"),
+                expense=-diff,
+                net=-diff,
+                fees=[FeeLine(name=_SHOPEE_PICKUP_NAME, amount=-diff)],
+                txn_at=payout.payout_at,
+            )
+        )
+        payout.amount = _q(credit.amount)
+
+
 def parse_tiktok_rows(
     order_rows: list[tuple],
     withdraw_rows: list[tuple],
@@ -533,7 +862,7 @@ def collect_payouts(root: Path | None = None) -> list[Payout]:
         if platform == "lazada":
             lazada_shopee.extend(parse_lazada_rows(_sheet_rows(wb, ("Transaction Overview",)), shop=shop, source_file=rel))
         elif platform == "shopee":
-            lazada_shopee.extend(parse_shopee_rows(_sheet_rows(wb, ("Transaction Report",)), shop=shop, source_file=rel))
+            lazada_shopee.extend(parse_shopee_workbook(wb, shop=shop, source_file=rel))
         elif platform == "tiktok":
             orders, withdrawals = parse_tiktok_rows(
                 _sheet_rows(wb, ("รายละเอียดคำสั่งซื้อ", "Order details")),
@@ -1031,9 +1360,8 @@ def workbook_parse_error(path: Path, fmt: str, shop: str | None) -> str | None:
             if not parse_lazada_rows(rows, shop=shop or "", source_file=source):
                 return "ไฟล์ไม่ใช่ Lazada Transaction Overview"
         elif fmt == "shopee":
-            rows = _sheet_rows(wb, ("Transaction Report",))
-            if not parse_shopee_rows(rows, shop=shop or "", source_file=source):
-                return "ไฟล์ไม่ใช่ Shopee Transaction Report"
+            if not parse_shopee_workbook(wb, shop=shop or "", source_file=source):
+                return "ไฟล์ไม่ใช่รายงานรายรับหรือ Transaction Report ของ Shopee"
         elif fmt == "tiktok":
             orders, withdrawals = parse_tiktok_rows(
                 _sheet_rows(wb, ("รายละเอียดคำสั่งซื้อ", "Order details")),
@@ -1131,8 +1459,12 @@ def run_link(*, upload: bool = True, root: Path | None = None) -> dict:
     payouts = collect_payouts(root)
     simas = simas_csv_path()
     po_index = load_tad_po_index(simas) if simas.is_file() else {}
+    credits = load_bank_credits() if upload else []
+    if upload:
+        # Pickup fee changes the payout amount, and the payout key includes it.
+        reconcile_shopee_pickup_fees(payouts, credits)
     links = link_bills(payouts, po_index) if po_index else []
-    deposits = match_bank_deposits(payouts, load_bank_credits()) if upload else []
+    deposits = match_bank_deposits(payouts, credits) if upload else []
     summary = {
         "payouts": len(payouts),
         "transferred": sum(1 for p in payouts if p.status == "transferred"),
