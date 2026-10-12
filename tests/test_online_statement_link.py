@@ -17,6 +17,7 @@ from src.kcw.online_statement_link import (
     parse_shopee_rows,
     parse_tiktok_rows,
     reconcile_shopee_pickup_fees,
+    staging_workbook_path,
     upload_destination,
     workbook_parse_error,
 )
@@ -350,6 +351,21 @@ def _save(path, sheets: dict[str, list[tuple]]) -> None:
 
 def test_upload_destination_uses_the_drive_shop_folder(tmp_path):
     assert upload_destination(tmp_path, "lazada", "LAZ1", "LAZ1 week.xlsx") == tmp_path / "Lazada" / "LAZ1" / "LAZ1 week.xlsx"
+
+
+def test_staging_workbook_keeps_an_xlsx_suffix(tmp_path):
+    dest = upload_destination(tmp_path, "lazada", "LICE", "LICE_week_28-04.xlsx")
+    staging = staging_workbook_path(dest)
+    assert staging == dest.with_name(".LICE_week_28-04.upload.xlsx")
+    assert staging.suffix == ".xlsx"
+    dest.parent.mkdir(parents=True)
+    _save(staging, {
+        "Transaction Overview": [
+            ("Amount", "Statement", "Paid Status", "Order No.", "Fee Name", "Transaction Type"),
+            (10, "20 Sep 2026 - 20 Sep 2026", "paid", "1118594800859773", "Item Price Credit", "Orders-Sales"),
+        ]
+    })
+    assert workbook_parse_error(staging, "lazada", "LICE") is None
 
 
 def test_workbook_parse_accepts_and_rejects_each_format(tmp_path):
