@@ -53,4 +53,15 @@ run_nb "33_ar_ap_report.ipynb" fail
 run_nb "90_csv_to_supabase.ipynb" continue
 
 echo
+echo "Running: FIFO movers (CLI)"
+FIFO_LOG="$LOGDIR/fifo_movers.log"
+if "$PY" -m src.kcw.pipeline fifo-movers --site hq > "$FIFO_LOG" 2>&1; then
+  echo "DONE: FIFO movers"
+else
+  echo "CLI FIFO movers failed"
+  tail -n 40 "$FIFO_LOG" || true
+  exit 1
+fi
+
+echo
 echo "ALL DONE."

@@ -474,6 +474,25 @@ def cmd_insight_generate(args: argparse.Namespace) -> int:
     )
 
 
+def cmd_fifo_proof(args: argparse.Namespace) -> int:
+    from src.kcw.fifo_job import run_proof
+
+    return run_proof(args.site)
+
+
+def cmd_fifo_backfill(args: argparse.Namespace) -> int:
+    from src.kcw.fifo_job import run_backfill
+
+    return run_backfill(args.site)
+
+
+def cmd_fifo_movers(args: argparse.Namespace) -> int:
+    from src.kcw.fifo_job import run_movers
+
+    day = date.fromisoformat(args.day) if args.day else None
+    return run_movers(args.site, day)
+
+
 def cmd_insight_worker(args: argparse.Namespace) -> int:
     from src.kcw.product_insight_worker import run_worker
 
@@ -935,6 +954,32 @@ def build_parser() -> argparse.ArgumentParser:
         help="Spark model id (default: SPARK_MODEL env or first loaded; e.g. nemotron-3-super)",
     )
     iwork.set_defaults(func=cmd_insight_worker)
+
+    fifo = sub.add_parser(
+        "fifo-proof",
+        help="Print FIFO cost for a few live SKUs. Does not write.",
+    )
+    fifo.add_argument("--site", choices=("hq", "syp"), default="hq")
+    fifo.set_defaults(func=cmd_fifo_proof)
+
+    fifob = sub.add_parser(
+        "fifo-backfill",
+        help="Rebuild FIFO cost for every HQ/SYP product and store it in schema fifo",
+    )
+    fifob.add_argument("--site", choices=("hq", "syp"), default="hq")
+    fifob.set_defaults(func=cmd_fifo_backfill)
+
+    fifom = sub.add_parser(
+        "fifo-movers",
+        help="Rebuild FIFO cost for products that moved on one day",
+    )
+    fifom.add_argument("--site", choices=("hq", "syp"), default="hq")
+    fifom.add_argument(
+        "--day",
+        default=None,
+        help="Movement day YYYY-MM-DD (default: today, Asia/Bangkok when TZ is set)",
+    )
+    fifom.set_defaults(func=cmd_fifo_movers)
 
     return p
 
