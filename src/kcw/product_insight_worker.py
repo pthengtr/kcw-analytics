@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from src.kcw.product_insight_generate import (
+    SPARK_BASE,
     generate_one,
     load_prompt,
     parse_window,
@@ -25,6 +26,7 @@ from src.kcw.product_insight_store import (
     connect_insights,
     init_insights_schema,
     parse_iso_dt,
+    remote_generated_at,
     resolve_snap_id,
     snap_path,
     utc_now_iso,
@@ -100,6 +102,32 @@ def _mover_rows(snap: sqlite3.Connection, *, window: str, facts_as_of: str) -> l
     return [(r["bcode"], int(r["score"] or 0)) for r in rows if r["bcode"]]
 
 
+def due_kind(
+    *,
+    local_generated_at: str | None,
+    remote_generated_at: str | None,
+    fresh_days: int,
+    now: datetime,
+    enable_soft_refresh: bool,
+    soft_min_days: int,
+) -> str:
+    """Why a BCODE is or isn't due.
+
+    The live timestamp is the Supabase row when one exists, otherwise the local
+    SQLite row. Local rows are not frozen: a newer snap rewrites them once they
+    are never / stale / soft under fresh_days.
+    """
+    generated_at = remote_generated_at or local_generated_at
+    if generated_at is None:
+        return "never"
+    age = _age_days(generated_at, now=now)
+    if age is not None and age >= fresh_days:
+        return "stale"
+    if enable_soft_refresh and age is not None and age >= soft_min_days:
+        return "soft"
+    return "fresh"
+
+
 def sync_eligibility(
     *,
     site: str,
@@ -140,7 +168,8 @@ def sync_eligibility(
                 (site, bcode, snap_id, facts_as_of, window, score, now_iso),
             )
 
-        # Recompute due status from product_insights age (skip in-flight running).
+        # Age comes from Supabase, or from local SQLite when Supabase has no row.
+        remote = remote_generated_at(site)
         rows = conn.execute(
             """
             SELECT q.bcode, q.status, q.retry_count, pi.generated_at
@@ -151,7 +180,15 @@ def sync_eligibility(
             (site, snap_id, window),
         ).fetchall()
 
-        counts = {"movers": len(movers), "pending": 0, "done_fresh": 0, "never": 0, "stale": 0, "soft": 0, "error": 0}
+        counts = {
+            "movers": len(movers),
+            "pending": 0,
+            "done_fresh": 0,
+            "never": 0,
+            "stale": 0,
+            "soft": 0,
+            "error": 0,
+        }
         for r in rows:
             status = r["status"] or "pending"
             if status == "running":
@@ -160,17 +197,20 @@ def sync_eligibility(
                 counts["error"] += 1
                 continue
 
-            gen = r["generated_at"]
-            age = _age_days(gen, now=now)
-            due = False
-            if gen is None:
-                due = True
+            kind = due_kind(
+                local_generated_at=r["generated_at"],
+                remote_generated_at=remote.get(str(r["bcode"])),
+                fresh_days=fresh_days,
+                now=now,
+                enable_soft_refresh=enable_soft_refresh,
+                soft_min_days=soft_min_days,
+            )
+            due = kind in ("never", "stale", "soft")
+            if kind == "never":
                 counts["never"] += 1
-            elif age is not None and age >= fresh_days:
-                due = True
+            elif kind == "stale":
                 counts["stale"] += 1
-            elif enable_soft_refresh and age is not None and age >= soft_min_days:
-                due = True
+            elif kind == "soft":
                 counts["soft"] += 1
             else:
                 counts["done_fresh"] += 1
@@ -216,18 +256,20 @@ def reclaim_stale_leases(*, site: str, snap_id: str, window: str, lease_minutes:
 
 
 def count_never_analyzed(*, site: str, snap_id: str, window: str) -> int:
+    """Movers on this snap with no insight in Supabase or local SQLite."""
+    remote = set(remote_generated_at(site))
     conn = connect_insights()
     try:
-        n = conn.execute(
+        rows = conn.execute(
             """
-            SELECT COUNT(*) FROM insight_queue q
+            SELECT q.bcode FROM insight_queue q
             LEFT JOIN product_insights pi ON pi.site=q.site AND pi.bcode=q.bcode
             WHERE q.site=? AND q.snap_id=? AND q.window=?
               AND pi.bcode IS NULL
             """,
             (site, snap_id, window),
-        ).fetchone()[0]
-        return int(n)
+        ).fetchall()
+        return sum(1 for r in rows if str(r["bcode"]) not in remote)
     finally:
         conn.close()
 
@@ -248,6 +290,7 @@ def claim_next(
     conn = connect_insights()
     try:
         init_insights_schema(conn)
+        remote = remote_generated_at(site)
         rows = conn.execute(
             """
             SELECT q.site, q.bcode, q.snap_id, q.facts_as_of, q.window, q.movement_score,
@@ -264,13 +307,19 @@ def claim_next(
         best: tuple[int, int, str] | None = None  # (tier, -score, bcode)
         best_row: sqlite3.Row | None = None
         for r in rows:
-            gen = r["generated_at"]
-            age = _age_days(gen, now=now)
-            if gen is None:
+            kind = due_kind(
+                local_generated_at=r["generated_at"],
+                remote_generated_at=remote.get(str(r["bcode"])),
+                fresh_days=fresh_days,
+                now=now,
+                enable_soft_refresh=enable_soft_refresh,
+                soft_min_days=soft_min_days,
+            )
+            if kind == "never":
                 tier = 0
-            elif age is not None and age >= fresh_days:
+            elif kind == "stale":
                 tier = 1
-            elif enable_soft_refresh and age is not None and age >= soft_min_days:
+            elif kind == "soft":
                 tier = 2
             else:
                 continue
@@ -427,7 +476,7 @@ def run_worker(
     print(
         f"worker start site={site} window={mover_window} fresh_days={fresh_days} "
         f"auto_steady={auto_steady} soft={enable_soft_refresh} snap_every={snap_every_days}d "
-        f"model={model_id} prompt={prompt.get('version')}",
+        f"model={model_id} prompt={prompt.get('version')} spark={SPARK_BASE}",
         flush=True,
     )
 
