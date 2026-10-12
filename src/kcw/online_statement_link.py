@@ -1349,6 +1349,15 @@ def upload_destination(root: Path, fmt: str, shop: str | None, filename: str) ->
     return root / folder / shop / name
 
 
+def staging_workbook_path(dest: Path) -> Path:
+    """Hidden temp path that still ends in .xlsx.
+
+    openpyxl picks the format from the suffix. A trailing ``.upload`` is rejected
+    before the workbook bytes are read.
+    """
+    return dest.with_name(f".{dest.stem}.upload.xlsx")
+
+
 def workbook_parse_error(path: Path, fmt: str, shop: str | None) -> str | None:
     from openpyxl import load_workbook
 
@@ -1418,7 +1427,7 @@ def apply_pending_uploads(root: Path | None = None) -> dict:
                 payload = response.read()
             dest = upload_destination(root, fmt, shop, filename)
             dest.parent.mkdir(parents=True, exist_ok=True)
-            temporary = dest.with_name(f".{dest.name}.upload")
+            temporary = staging_workbook_path(dest)
             temporary.write_bytes(payload)
             try:
                 error = workbook_parse_error(temporary, fmt, shop)
