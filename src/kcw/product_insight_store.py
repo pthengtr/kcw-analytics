@@ -71,6 +71,7 @@ def connect_insights(*, readonly: bool = False) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA busy_timeout=30000")
     return conn
 
 
@@ -191,6 +192,27 @@ def init_insights_schema(conn: sqlite3.Connection | None = None) -> None:
         conn.close()
 
 
+INSIGHT_TABLE = "product_insight.product_insights"
+
+
+def _pg_connect():
+    import psycopg
+
+    from src.kcw.tar import supabase_db_url
+
+    return psycopg.connect(supabase_db_url(), connect_timeout=15)
+
+
+def remote_generated_at(site: str) -> dict[str, str]:
+    """bcode -> generated_at for insights already stored in Supabase."""
+    with _pg_connect() as conn:
+        rows = conn.execute(
+            f"SELECT bcode, generated_at FROM {INSIGHT_TABLE} WHERE site = %s",
+            (site.lower(),),
+        ).fetchall()
+    return {str(bcode): str(generated_at) for bcode, generated_at in rows if bcode and generated_at}
+
+
 def upsert_insight(
     *,
     site: str,
@@ -204,52 +226,45 @@ def upsert_insight(
     insight_json: str,
     extras: dict[str, Any] | None = None,
 ) -> None:
-    conn = connect_insights()
-    try:
-        init_insights_schema(conn)
-        extra = extras or {}
-        extra_cols = [c for c, _ in INSIGHT_QUERY_COLUMNS if c in extra]
-        col_sql = (
-            "site, bcode, generated_at, facts_as_of, prompt_version, "
-            "model_id, facts_hash, summary, insight_json"
-        )
-        placeholders = "?, ?, ?, ?, ?, ?, ?, ?, ?"
-        values: list[Any] = [
-            site.lower(),
-            bcode.strip(),
-            generated_at,
-            facts_as_of,
-            prompt_version,
-            model_id,
-            facts_hash,
-            summary,
-            insight_json,
-        ]
-        update_sql = (
-            "generated_at=excluded.generated_at, "
-            "facts_as_of=excluded.facts_as_of, "
-            "prompt_version=excluded.prompt_version, "
-            "model_id=excluded.model_id, "
-            "facts_hash=excluded.facts_hash, "
-            "summary=excluded.summary, "
-            "insight_json=excluded.insight_json"
-        )
-        for col in extra_cols:
-            col_sql += f", {col}"
-            placeholders += ", ?"
-            values.append(extra.get(col))
-            update_sql += f", {col}=excluded.{col}"
+    """Insert/update one insight in Supabase, including SKUs that already exist locally."""
+    site_l = site.lower()
+    code = bcode.strip()
+
+    import json
+
+    from psycopg.types.json import Json
+
+    extra = extras or {}
+    payload: dict[str, Any] = {
+        "site": site_l,
+        "bcode": code,
+        "generated_at": generated_at,
+        "facts_as_of": facts_as_of,
+        "prompt_version": prompt_version,
+        "model_id": model_id,
+        "facts_hash": facts_hash,
+        "summary": summary,
+        "insight_json": Json(json.loads(insight_json) if isinstance(insight_json, str) else insight_json),
+    }
+    for col, _decl in INSIGHT_QUERY_COLUMNS:
+        if col in extra:
+            payload[col] = extra.get(col)
+
+    cols = list(payload.keys())
+    col_sql = ", ".join(cols)
+    placeholders = ", ".join(["%s"] * len(cols))
+    update_sql = ", ".join(f"{col}=excluded.{col}" for col in cols if col not in ("site", "bcode"))
+    values = [payload[c] for c in cols]
+    with _pg_connect() as conn:
         conn.execute(
             f"""
-            INSERT INTO product_insights ({col_sql})
+            INSERT INTO {INSIGHT_TABLE} ({col_sql})
             VALUES ({placeholders})
-            ON CONFLICT(site, bcode) DO UPDATE SET {update_sql}
+            ON CONFLICT (site, bcode) DO UPDATE SET {update_sql}
             """,
             values,
         )
         conn.commit()
-    finally:
-        conn.close()
 
 
 def get_insight(site: str, bcode: str) -> dict[str, Any] | None:
