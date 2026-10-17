@@ -216,21 +216,25 @@ def test_tiktok_orders_follow_the_withdrawal_that_sweeps_them():
         tuple(order_header),
         ("585982682407208429", "คำสั่งซื้อ", "", "2026/09/09", "", 80, 100, "", "", "", "", "", "", -20, -10),
         ("585982682407208430", "คำสั่งซื้อ", "", "2026/09/15", "", 40, 50, "", "", "", "", "", "", -10, -5),
+        ("585982682407208431", "คำสั่งซื้อ", "", "2026/09/16", "", 15, 20, "", "", "", "", "", "", -5, -2),
     ]
     withdraw_header = ["ประเภทธุรกรรม", "ID อ้างอิง", "เวลาส่งคำขอ", "จำนวน", "สถานะ", "เวลาที่สำเร็จ", "บัญชีธนาคาร"]
     withdrawals = [
         tuple(withdraw_header),
         ("Withdrawal", "3701", "2026/09/09", -200, "Transferred", "2026/09/09", "********1139"),
+        ("Withdrawal", "3703", "2026/09/16", -120, "Transferred", "2026/09/16", "********1139"),
         ("Earnings", "3702", "2026/09/15", 40, "Transferred", "2026/09/15", "/"),
     ]
     order_lines, payouts = parse_tiktok_rows(orders, withdrawals, shop="ICE", source_file="Tiktok/ICE/a.xlsx")
     assigned = assign_tiktok(order_lines, payouts, shop="ICE", source_file="Tiktok/ICE/a.xlsx")
-    transferred = [p for p in assigned if p.status == "transferred"]
+    by_ref = {p.reference: p for p in assigned if p.status == "transferred"}
     pending = [p for p in assigned if p.status == "pending"]
-    assert transferred[0].amount == Decimal("200.00")
-    assert transferred[0].lines[0].order_id == "585982682407208429"
-    assert transferred[0].lines[0].fees[0].name == "ค่าคอมมิชชั่น TikTok Shop"
-    assert pending[0].lines[0].order_id == "585982682407208430"
+    assert by_ref["3701"].amount == Decimal("200.00")
+    assert by_ref["3701"].lines == []
+    swept = {line.order_id for line in by_ref["3703"].lines}
+    assert swept == {"585982682407208429", "585982682407208430"}
+    assert by_ref["3703"].lines[0].fees[0].name == "ค่าคอมมิชชั่น TikTok Shop"
+    assert pending[0].lines[0].order_id == "585982682407208431"
 
 
 def test_po_match_prefers_exact_then_head_trim():
