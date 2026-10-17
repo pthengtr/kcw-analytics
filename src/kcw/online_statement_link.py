@@ -799,7 +799,7 @@ def _tiktok_withdrawals(
                 source_file=source_file,
                 note=(
                     f"ถอนเข้าบัญชี {bank}".strip()
-                    + " — ออเดอร์ที่วันเงินเข้าไม่หลังวันถอน"
+                    + " — ออเดอร์ที่วันเงินเข้าก่อนวันถอน"
                 ),
                 lines=[],
             )
@@ -814,6 +814,14 @@ def assign_tiktok(
     shop: str,
     source_file: str,
 ) -> list[Payout]:
+    """Sweep each order into the next withdrawal after its settlement day.
+
+    A withdrawal on day D pays earnings settled on or after the previous
+    withdrawal day and strictly before D. Earnings that land on D itself
+    wait for the following withdrawal. The 30 Sep withdrawal of 18,266.25
+    is earnings from 23–29 Sep; the 7 Oct withdrawal of 18,341.76 is
+    earnings from 30 Sep–6 Oct, not the 7 Oct earnings.
+    """
     withdrawals = sorted(withdrawals, key=lambda p: p.payout_at or datetime.min.replace(tzinfo=BKK))
     pending: list[StatementLine] = []
     for order in orders:
@@ -822,8 +830,9 @@ def assign_tiktok(
         for payout in withdrawals:
             if payout.payout_at is None or order.txn_at is None:
                 continue
-            if order.txn_at.date() <= payout.payout_at.date() and (
-                prev is None or order.txn_at.date() > prev.date()
+            settled = order.txn_at.date()
+            if settled < payout.payout_at.date() and (
+                prev is None or settled >= prev.date()
             ):
                 payout.lines.append(order)
                 placed = True
@@ -843,7 +852,7 @@ def assign_tiktok(
                 reference="ยังไม่ถอนเข้าบัญชี",
                 status="pending",
                 source_file=source_file,
-                note="เงินเข้าวอลเล็ตหลังการถอนครั้งล่าสุด ยังไม่เข้าบัญชี",
+                note="เงินเข้าวอลเล็ตในวันถอนหรือหลังจากนั้น ยังไม่เข้าบัญชี",
                 lines=pending,
             )
         )
