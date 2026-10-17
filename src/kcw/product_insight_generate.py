@@ -801,6 +801,21 @@ def _parse_insight_json(content: str) -> dict[str, Any]:
     return json.loads(raw)
 
 
+def snap_max_billdate(snap: sqlite3.Connection) -> str | None:
+    """Latest SI/PI bill date in the snapshot (YYYY-MM-DD)."""
+    row = snap.execute(
+        """
+        SELECT MAX(d) FROM (
+          SELECT MAX(billdate) AS d FROM sidet
+          UNION ALL
+          SELECT MAX(billdate) AS d FROM pidet
+        )
+        """
+    ).fetchone()
+    raw = row[0] if row else None
+    return str(raw)[:10] if raw else None
+
+
 def _mark_queue_done(*, site: str, bcode: str, snap_id: str, window: str) -> None:
     conn = connect_insights()
     try:
@@ -830,6 +845,7 @@ def generate_one(
     snap = _open_snap(snap_id)
     try:
         facts = build_fact_pack(snap, site=site, bcode=bcode, facts_as_of=facts_as_of)
+        data_through = snap_max_billdate(snap)
     finally:
         snap.close()
 
@@ -888,6 +904,7 @@ def generate_one(
         summary=summary if isinstance(summary, str) else None,
         insight_json=json.dumps(insight, ensure_ascii=False),
         extras=extras,
+        data_through=data_through,
     )
     _mark_queue_done(site=site, bcode=bcode, snap_id=snap_id, window=window)
     return {

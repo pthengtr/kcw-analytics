@@ -510,6 +510,9 @@ def cmd_insight_worker(args: argparse.Namespace) -> int:
         years=int(args.years),
         max_jobs=args.max_jobs,
         model=getattr(args, "model", None),
+        delta=bool(getattr(args, "delta", False)),
+        no_delta=bool(getattr(args, "no_delta", False)),
+        delta_every_hours=int(getattr(args, "delta_every_hours", 6)),
     )
 
 
@@ -902,7 +905,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     iwork = sub.add_parser(
         "insight-worker",
-        help="24/7 product-insight worker: catch-up then weekly movers (auto-steady)",
+        help="24/7 product-insight worker. --delta refreshes the snap, then drains never-analyzed, errors, and products that moved since their insight",
     )
     iwork.add_argument("--site", choices=("hq", "syp"), default="hq")
     iwork.add_argument(
@@ -952,6 +955,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--model",
         default=None,
         help="Spark model id (default: SPARK_MODEL env or first loaded; e.g. nemotron-3-super)",
+    )
+    iwork.add_argument(
+        "--delta",
+        action="store_true",
+        help="Finite queue: never-analyzed, errors, then products with bills after the stored insight. Rebuild after each drain",
+    )
+    iwork.add_argument(
+        "--no-delta",
+        action="store_true",
+        help="Force the 14-day age refresh even if the saved worker state is delta",
+    )
+    iwork.add_argument(
+        "--delta-every-hours",
+        type=int,
+        default=6,
+        help="Minimum hours between incremental snap refreshes once the delta queue is empty (default 6)",
     )
     iwork.set_defaults(func=cmd_insight_worker)
 

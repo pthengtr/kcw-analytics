@@ -78,7 +78,11 @@ def connect_insights(*, readonly: bool = False) -> sqlite3.Connection:
 def _ensure_column(conn: sqlite3.Connection, table: str, column: str, decl: str) -> None:
     cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
     if column not in cols:
-        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+        try:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column" not in str(exc).lower():
+                raise
 
 
 INSIGHT_QUERY_COLUMNS: tuple[tuple[str, str], ...] = (
@@ -173,6 +177,7 @@ def init_insights_schema(conn: sqlite3.Connection | None = None) -> None:
     _ensure_column(conn, "insight_queue", "leased_at", "TEXT")
     _ensure_column(conn, "insight_queue", "retry_count", "INTEGER NOT NULL DEFAULT 0")
     _ensure_column(conn, "insight_queue", "last_error", "TEXT")
+    _ensure_column(conn, "insight_queue", "due_tier", "INTEGER NOT NULL DEFAULT 1")
     for col, decl in INSIGHT_QUERY_COLUMNS:
         _ensure_column(conn, "product_insights", col, decl)
     conn.executescript(
@@ -203,6 +208,18 @@ def _pg_connect():
     return psycopg.connect(supabase_db_url(), connect_timeout=15)
 
 
+def _ensure_remote_data_through(conn) -> bool:
+    """Bill date the insight was generated against. Missing on older rows."""
+    try:
+        conn.execute(
+            f"ALTER TABLE {INSIGHT_TABLE} ADD COLUMN IF NOT EXISTS data_through text"
+        )
+        return True
+    except Exception as exc:
+        print(f"[insight] data_through column skipped: {exc}", flush=True)
+        return False
+
+
 def remote_generated_at(site: str) -> dict[str, str]:
     """bcode -> generated_at for insights already stored in Supabase."""
     with _pg_connect() as conn:
@@ -211,6 +228,41 @@ def remote_generated_at(site: str) -> dict[str, str]:
             (site.lower(),),
         ).fetchall()
     return {str(bcode): str(generated_at) for bcode, generated_at in rows if bcode and generated_at}
+
+
+def remote_insight_marks(site: str) -> dict[str, dict[str, str | None]]:
+    """bcode -> generated_at, facts_as_of, data_through from Supabase."""
+    with _pg_connect() as conn:
+        has_through = _ensure_remote_data_through(conn)
+        if has_through:
+            conn.commit()
+            rows = conn.execute(
+                f"""
+                SELECT bcode, generated_at, facts_as_of, data_through
+                FROM {INSIGHT_TABLE} WHERE site = %s
+                """,
+                (site.lower(),),
+            ).fetchall()
+        else:
+            conn.rollback()
+            rows = conn.execute(
+                f"""
+                SELECT bcode, generated_at, facts_as_of
+                FROM {INSIGHT_TABLE} WHERE site = %s
+                """,
+                (site.lower(),),
+            ).fetchall()
+    out: dict[str, dict[str, str | None]] = {}
+    for row in rows:
+        bcode = str(row[0] or "").strip()
+        if not bcode:
+            continue
+        out[bcode] = {
+            "generated_at": str(row[1]) if row[1] else None,
+            "facts_as_of": str(row[2]) if row[2] else None,
+            "data_through": (str(row[3])[:10] if has_through and row[3] else None),
+        }
+    return out
 
 
 def upsert_insight(
@@ -225,6 +277,7 @@ def upsert_insight(
     summary: str | None,
     insight_json: str,
     extras: dict[str, Any] | None = None,
+    data_through: str | None = None,
 ) -> None:
     """Insert/update one insight in Supabase, including SKUs that already exist locally."""
     site_l = site.lower()
@@ -250,12 +303,19 @@ def upsert_insight(
         if col in extra:
             payload[col] = extra.get(col)
 
-    cols = list(payload.keys())
-    col_sql = ", ".join(cols)
-    placeholders = ", ".join(["%s"] * len(cols))
-    update_sql = ", ".join(f"{col}=excluded.{col}" for col in cols if col not in ("site", "bcode"))
-    values = [payload[c] for c in cols]
+    through = (data_through or "")[:10]
     with _pg_connect() as conn:
+        if through and _ensure_remote_data_through(conn):
+            payload["data_through"] = through
+        elif through:
+            conn.rollback()
+        cols = list(payload.keys())
+        col_sql = ", ".join(cols)
+        placeholders = ", ".join(["%s"] * len(cols))
+        update_sql = ", ".join(
+            f"{col}=excluded.{col}" for col in cols if col not in ("site", "bcode")
+        )
+        values = [payload[c] for c in cols]
         conn.execute(
             f"""
             INSERT INTO {INSIGHT_TABLE} ({col_sql})
