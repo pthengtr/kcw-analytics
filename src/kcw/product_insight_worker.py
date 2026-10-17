@@ -1,17 +1,21 @@
-"""Continuous product-insight worker: catch-up then weekly movers (auto-steady).
+"""Continuous product-insight worker.
 
-Priority: never analyzed → age >= fresh_days → optional soft refresh.
-Runs forever; idles when nothing is due. Default fresh_days=14, auto-steady 5y→7d.
+Default age mode: never analyzed, then age >= fresh_days, then optional soft refresh.
+Delta mode (--delta): incremental snap refresh, then a finite queue of never-analyzed,
+previous errors, and products whose snap bills are newer than the insight already stored.
+When that queue drains, the next refresh builds a shorter one.
 """
 
 from __future__ import annotations
 
+import fcntl
 import sqlite3
 import time
 import traceback
+from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from src.kcw.product_insight_generate import (
     SPARK_BASE,
@@ -25,8 +29,10 @@ from src.kcw.product_insight_generate import (
 from src.kcw.product_insight_store import (
     connect_insights,
     init_insights_schema,
+    insights_data_dir,
     parse_iso_dt,
     remote_generated_at,
+    remote_insight_marks,
     resolve_snap_id,
     snap_path,
     utc_now_iso,
@@ -34,7 +40,9 @@ from src.kcw.product_insight_store import (
 
 BACKFILL_WINDOW = "5y"
 STEADY_WINDOW = "7d"
+DELTA_WINDOW = "delta"
 DEFAULT_FRESH_DAYS = 14
+DEFAULT_DELTA_EVERY_HOURS = 6
 DEFAULT_SOFT_MIN_DAYS = 7  # soft tier only when enable_soft_refresh
 DEFAULT_SNAP_EVERY_DAYS = 7
 DEFAULT_IDLE_SECONDS = 120
@@ -431,6 +439,437 @@ def _maybe_refresh_snap(
     return resolve_snap_id("latest"), last_snap_at or utc_now_iso()
 
 
+def covered_bill_date(
+    facts_as_of: str | None,
+    generated_at: str | None,
+    data_through: str | None = None,
+) -> str | None:
+    """Last bill date treated as already inside an insight (YYYY-MM-DD).
+
+    `data_through` is the snap max bill stored at generation. Older rows only
+    have `facts_as_of`. A morning snap stamp (before 12:00) closed on the
+    previous calendar day — the 2026-10-10 01:18 refresh included bills
+    through 2026-10-09.
+    """
+    if data_through and str(data_through)[:10]:
+        return str(data_through)[:10]
+    if not facts_as_of or not generated_at:
+        return None
+    try:
+        facts_day = date.fromisoformat(str(facts_as_of)[:10])
+        gen_day = date.fromisoformat(str(generated_at)[:10])
+    except ValueError:
+        return None
+    stamp = str(facts_as_of)
+    if len(stamp) > 10 and stamp[10] == "T":
+        hour = int(stamp[11:13]) if len(stamp) >= 13 and stamp[11:13].isdigit() else 12
+        if hour < 12:
+            facts_day = facts_day - timedelta(days=1)
+    return min(facts_day, gen_day).isoformat()
+
+
+def delta_reason(
+    *,
+    generated_at: str | None,
+    facts_as_of: str | None,
+    data_through: str | None,
+    max_bill: str | None,
+) -> str:
+    """never | moved | fresh. Supabase absence is never, even if a local row exists."""
+    if not generated_at:
+        return "never"
+    bill = (max_bill or "")[:10]
+    covered = covered_bill_date(facts_as_of, generated_at, data_through)
+    if bill and covered and bill > covered:
+        return "moved"
+    return "fresh"
+
+
+@contextmanager
+def _delta_rebuild_lock() -> Iterator[bool]:
+    """Exclusive lock so only one worker refreshes the snap and rebuilds the queue."""
+    path = insights_data_dir() / "delta-rebuild.lock"
+    handle = open(path, "a+")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        yield False
+        return
+    try:
+        yield True
+    finally:
+        fcntl.flock(handle, fcntl.LOCK_UN)
+        handle.close()
+
+
+def _snap_bill_index(snap_id: str) -> tuple[str, list[tuple[str, str, int]]]:
+    """Snap facts_as_of plus (bcode, max bill date, line count) for every SI/PI product."""
+    snap = _open_snap(snap_id)
+    try:
+        meta = _snap_meta(snap)
+        facts_as_of = meta.get("facts_as_of") or utc_now_iso()
+        rows = snap.execute(
+            """
+            SELECT bcode, MAX(max_date) AS max_date, SUM(n) AS n FROM (
+              SELECT bcode, MAX(billdate) AS max_date, COUNT(*) AS n
+              FROM sidet GROUP BY bcode
+              UNION ALL
+              SELECT bcode, MAX(billdate) AS max_date, COUNT(*) AS n
+              FROM pidet GROUP BY bcode
+            )
+            GROUP BY bcode
+            """
+        ).fetchall()
+    finally:
+        snap.close()
+    indexed: list[tuple[str, str, int]] = []
+    for row in rows:
+        bcode = str(row["bcode"] or "").strip()
+        if not bcode:
+            continue
+        indexed.append((bcode, str(row["max_date"] or "")[:10], int(row["n"] or 0)))
+    return facts_as_of, indexed
+
+
+def _delta_open_counts(conn: sqlite3.Connection, *, site: str, snap_id: str) -> tuple[int, int]:
+    row = conn.execute(
+        """
+        SELECT
+          SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending,
+          SUM(CASE WHEN status='running' THEN 1 ELSE 0 END) AS running
+        FROM insight_queue
+        WHERE site=? AND snap_id=? AND window=?
+        """,
+        (site, snap_id, DELTA_WINDOW),
+    ).fetchone()
+    return int(row["pending"] or 0), int(row["running"] or 0)
+
+
+def sync_delta_queue(*, site: str, snap_id: str) -> dict[str, int]:
+    """Replace the delta queue with never-analyzed, prior errors, and post-insight movers.
+
+    Quiet products stay out. Call only when nothing on this window is running.
+    """
+    facts_as_of, bills = _snap_bill_index(snap_id)
+    marks = remote_insight_marks(site)
+    now_iso = utc_now_iso()
+    due: list[tuple[str, int, int]] = []
+    counts = {"snap_products": len(bills), "never": 0, "moved": 0, "fresh": 0, "pending": 0}
+    for bcode, max_date, score in bills:
+        mark = marks.get(bcode)
+        if mark is None:
+            reason = "never"
+        else:
+            reason = delta_reason(
+                generated_at=mark.get("generated_at"),
+                facts_as_of=mark.get("facts_as_of"),
+                data_through=mark.get("data_through"),
+                max_bill=max_date,
+            )
+        if reason == "fresh":
+            counts["fresh"] += 1
+            continue
+        counts[reason] += 1
+        tier = 0 if reason == "never" else 1
+        due.append((bcode, tier, score))
+
+    conn = connect_insights()
+    try:
+        init_insights_schema(conn)
+        prior_errors = {
+            str(row["bcode"])
+            for row in conn.execute(
+                """
+                SELECT bcode FROM insight_queue
+                WHERE site=? AND snap_id=? AND window=? AND status='error'
+                """,
+                (site, snap_id, BACKFILL_WINDOW),
+            )
+        }
+        counts["retry_error"] = sum(1 for bcode, _tier, _score in due if bcode in prior_errors)
+        conn.execute(
+            """
+            UPDATE insight_queue
+            SET status='done', leased_at=NULL, updated_at=?
+            WHERE site=? AND snap_id=? AND window=?
+            """,
+            (now_iso, site, snap_id, DELTA_WINDOW),
+        )
+        conn.executemany(
+            """
+            INSERT INTO insight_queue (
+              site, bcode, snap_id, facts_as_of, window, movement_score,
+              status, updated_at, leased_at, retry_count, last_error, due_tier
+            ) VALUES (?,?,?,?,?,?, 'pending', ?, NULL, 0, NULL, ?)
+            ON CONFLICT(site, bcode, snap_id, window) DO UPDATE SET
+              facts_as_of=excluded.facts_as_of,
+              movement_score=excluded.movement_score,
+              due_tier=excluded.due_tier,
+              status='pending',
+              updated_at=excluded.updated_at,
+              leased_at=NULL,
+              retry_count=0,
+              last_error=NULL
+            """,
+            [
+                (site, bcode, snap_id, facts_as_of, DELTA_WINDOW, score, now_iso, tier)
+                for bcode, tier, score in due
+            ],
+        )
+        conn.commit()
+        counts["pending"] = len(due)
+        return counts
+    finally:
+        conn.close()
+
+
+def claim_next_delta(*, site: str, snap_id: str) -> dict[str, Any] | None:
+    """Claim the next delta row. None if the queue is empty. {_contended: True} on a lost race."""
+    now_iso = utc_now_iso()
+    conn = connect_insights()
+    try:
+        init_insights_schema(conn)
+        for _ in range(5):
+            row = conn.execute(
+                """
+                SELECT site, bcode, snap_id, facts_as_of, window, movement_score, due_tier
+                FROM insight_queue
+                WHERE site=? AND snap_id=? AND window=? AND status='pending'
+                ORDER BY COALESCE(due_tier, 1), movement_score DESC, bcode
+                LIMIT 1
+                """,
+                (site, snap_id, DELTA_WINDOW),
+            ).fetchone()
+            if row is None:
+                return None
+            cur = conn.execute(
+                """
+                UPDATE insight_queue
+                SET status='running', leased_at=?, updated_at=?
+                WHERE site=? AND bcode=? AND snap_id=? AND window=?
+                  AND status='pending'
+                """,
+                (now_iso, now_iso, site, row["bcode"], snap_id, DELTA_WINDOW),
+            )
+            if cur.rowcount == 1:
+                conn.commit()
+                return dict(row)
+            conn.rollback()
+        return {"_contended": True}
+    finally:
+        conn.close()
+
+
+def _refresh_age_hours(last_snap_at: str | None) -> float | None:
+    prev = parse_iso_dt(last_snap_at)
+    if prev is None:
+        return None
+    now = datetime.now().astimezone()
+    if prev.tzinfo is None:
+        prev = prev.replace(tzinfo=timezone.utc)
+    return (now - prev.astimezone(now.tzinfo)).total_seconds() / 3600.0
+
+
+def _run_delta_worker(
+    *,
+    site: str,
+    idle_seconds: int,
+    lease_minutes: int,
+    max_retries: int,
+    years: int,
+    max_jobs: int | None,
+    model: str | None,
+    delta_every_hours: int,
+    state: dict[str, Any],
+) -> int:
+    """Drain a movement queue, then refresh the snap and build the next shorter one."""
+    del years  # full extracts stay on the age-mode path; delta refreshes in place
+    idle_seconds = max(15, int(idle_seconds))
+    every_hours = max(1, int(delta_every_hours))
+    last_snap_at = state.get("last_snap_at")
+    prompt = load_prompt()
+    model_id: str | None = None
+
+    def _model() -> str:
+        nonlocal model_id
+        while not model_id:
+            try:
+                model_id = resolve_model(model)
+            except Exception as exc:
+                print(
+                    f"worker: model lookup failed: {exc}; retry in {idle_seconds}s",
+                    flush=True,
+                )
+                time.sleep(idle_seconds)
+        return model_id
+
+    print(
+        f"worker start site={site} mode=delta every={every_hours}h "
+        f"model={model or 'auto'} prompt={prompt.get('version')} spark={SPARK_BASE}",
+        flush=True,
+    )
+    jobs_done = 0
+
+    while True:
+        if max_jobs is not None and jobs_done >= max_jobs:
+            print(f"worker: max_jobs={max_jobs} reached, exiting", flush=True)
+            return 0
+
+        try:
+            snap_id = resolve_snap_id("latest")
+        except FileNotFoundError:
+            print("worker: no snapshot yet; taking a full snapshot", flush=True)
+            try:
+                from src.kcw.product_insight_snapshot import run_snapshot
+
+                out = run_snapshot(site=site, years=5, snap_id=None)
+                snap_id = (
+                    out.get("snap_id")
+                    if isinstance(out, dict)
+                    else Path(out).parent.name
+                )
+            except Exception as exc:
+                print(f"worker: full snapshot failed: {exc}", flush=True)
+                time.sleep(idle_seconds)
+                continue
+
+        conn = connect_insights()
+        try:
+            init_insights_schema(conn)
+            reclaimed = reclaim_stale_leases(
+                site=site,
+                snap_id=snap_id,
+                window=DELTA_WINDOW,
+                lease_minutes=lease_minutes,
+            )
+            pending, running = _delta_open_counts(conn, site=site, snap_id=snap_id)
+            state = _load_worker_state(conn, site)
+            last_snap_at = state.get("last_snap_at") or last_snap_at
+        finally:
+            conn.close()
+        if reclaimed:
+            print(f"worker: reclaimed {reclaimed} stale lease(s)", flush=True)
+            continue
+
+        if pending:
+            _model()
+            item = claim_next_delta(site=site, snap_id=snap_id)
+            if item is None or item.get("_contended"):
+                time.sleep(1)
+                continue
+            bcode = item["bcode"]
+            raw_tier = item.get("due_tier")
+            tier = 1 if raw_tier is None else int(raw_tier)
+            print(
+                f"worker: claim {bcode} tier={tier} score={item.get('movement_score')} "
+                f"window={DELTA_WINDOW}",
+                flush=True,
+            )
+            try:
+                res = generate_one(
+                    site=site,
+                    bcode=bcode,
+                    snap_id=snap_id,
+                    window=DELTA_WINDOW,
+                    facts_as_of=item.get("facts_as_of") or utc_now_iso(),
+                    prompt=prompt,
+                    model=_model(),
+                )
+                jobs_done += 1
+                print(
+                    f"worker: [{jobs_done}] {bcode} {res['elapsed_s']}s :: {(res.get('summary') or '')[:80]}",
+                    flush=True,
+                )
+            except Exception as exc:
+                err = f"{type(exc).__name__}: {exc}"
+                print(f"worker: ERROR {bcode}: {err}", flush=True)
+                traceback.print_exc()
+                _mark_error(
+                    site=site,
+                    bcode=bcode,
+                    snap_id=snap_id,
+                    window=DELTA_WINDOW,
+                    error=err,
+                    max_retries=max_retries,
+                )
+                time.sleep(min(30, idle_seconds))
+            continue
+
+        if running:
+            print(
+                f"worker: waiting on {running} running delta job(s); sleep {idle_seconds}s",
+                flush=True,
+            )
+            time.sleep(idle_seconds)
+            continue
+
+        age_h = _refresh_age_hours(last_snap_at)
+        if age_h is not None and age_h < every_hours:
+            wait_h = every_hours - age_h
+            print(
+                f"worker: delta queue empty; next snap refresh in {wait_h:.1f}h "
+                f"(every {every_hours}h)",
+                flush=True,
+            )
+            time.sleep(idle_seconds)
+            continue
+
+        refresh_failed = False
+        with _delta_rebuild_lock() as got:
+            if not got:
+                print("worker: delta refresh already running; waiting", flush=True)
+                time.sleep(idle_seconds)
+                continue
+            conn = connect_insights()
+            try:
+                pending, running = _delta_open_counts(conn, site=site, snap_id=snap_id)
+                state = _load_worker_state(conn, site)
+            finally:
+                conn.close()
+            if pending or running:
+                continue
+            age_h = _refresh_age_hours(state.get("last_snap_at"))
+            if age_h is not None and age_h < every_hours:
+                continue
+            refresh_failed = False
+            try:
+                from src.kcw.product_insight_snapshot import refresh_snapshot_incremental
+
+                print(f"worker: incremental snapshot refresh site={site} snap={snap_id}", flush=True)
+                refresh_snapshot_incremental(snap=snap_id, lookback_days=1)
+                counts = sync_delta_queue(site=site, snap_id=snap_id)
+            except Exception as exc:
+                refresh_failed = True
+                print(f"worker: delta refresh failed: {exc}", flush=True)
+                traceback.print_exc()
+            else:
+                refreshed_at = utc_now_iso()
+                conn = connect_insights()
+                try:
+                    _save_worker_state(
+                        conn,
+                        site=site,
+                        mover_window=DELTA_WINDOW,
+                        last_snap_id=snap_id,
+                        last_snap_at=refreshed_at,
+                    )
+                finally:
+                    conn.close()
+                last_snap_at = refreshed_at
+                print(
+                    f"worker: delta sync snap={snap_id} "
+                    f"products={counts['snap_products']} pending={counts['pending']} "
+                    f"never={counts['never']} of_which_prior_error={counts['retry_error']} "
+                    f"moved={counts['moved']} quiet={counts['fresh']}",
+                    flush=True,
+                )
+        if refresh_failed:
+            time.sleep(idle_seconds)
+
+    return 0
+
+
 def run_worker(
     *,
     site: str = "hq",
@@ -447,6 +886,9 @@ def run_worker(
     years: int = 5,
     max_jobs: int | None = None,
     model: str | None = None,
+    delta: bool = False,
+    no_delta: bool = False,
+    delta_every_hours: int = DEFAULT_DELTA_EVERY_HOURS,
 ) -> int:
     """Run forever (or until max_jobs). concurrency is forced to 1 on this path."""
     site = site.lower()
@@ -465,9 +907,23 @@ def run_worker(
     finally:
         conn.close()
 
-    if state.get("mover_window"):
-        # Resume prior mode unless caller forced a different starting window via empty state.
-        mover_window = str(state["mover_window"])
+    saved_window = str(state.get("mover_window") or "")
+    if not no_delta and (delta or saved_window == DELTA_WINDOW):
+        return _run_delta_worker(
+            site=site,
+            idle_seconds=idle_seconds,
+            lease_minutes=lease_minutes,
+            max_retries=max_retries,
+            years=years,
+            max_jobs=max_jobs,
+            model=model,
+            delta_every_hours=delta_every_hours,
+            state=state,
+        )
+
+    if saved_window and saved_window != DELTA_WINDOW:
+        # Resume prior age-mode window unless the caller forced delta above.
+        mover_window = saved_window
     last_snap_at = state.get("last_snap_at")
     last_snap_id = state.get("last_snap_id")
 
