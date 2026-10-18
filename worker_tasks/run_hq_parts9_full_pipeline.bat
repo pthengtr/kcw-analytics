@@ -94,6 +94,20 @@ if %ERRORLEVEL% NEQ 0 (
 
 call :run_nb "21_tar_daily_report.ipynb" continue
 
+echo.
+echo ------------------------------------------
+echo Running: VAT inventory rebuild (CLI)
+echo ------------------------------------------
+set "VAT_INV_LOG=%KCW_ANALYTICS_LOG_DIR%\vat_inventory.log"
+"%PY%" -m src.kcw.pipeline vat-inventory > "%VAT_INV_LOG%" 2>&1
+if %ERRORLEVEL% NEQ 0 (
+    echo CLI VAT inventory failed
+    echo Check log: "%VAT_INV_LOG%"
+    powershell -NoProfile -Command "Get-Content -LiteralPath '%VAT_INV_LOG%' -Tail 40 -ErrorAction SilentlyContinue"
+    goto :fail
+)
+echo DONE: VAT inventory
+
 call :run_nb "30_generate_bills_summary.ipynb" fail
 if errorlevel 1 goto :fail
 

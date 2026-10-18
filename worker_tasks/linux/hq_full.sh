@@ -46,6 +46,18 @@ else
 fi
 
 run_nb "21_tar_daily_report.ipynb" continue
+
+echo
+echo "Running: VAT inventory rebuild (CLI)"
+VAT_INV_LOG="$LOGDIR/vat_inventory.log"
+if "$PY" -m src.kcw.pipeline vat-inventory > "$VAT_INV_LOG" 2>&1; then
+  echo "DONE: VAT inventory"
+else
+  echo "CLI VAT inventory failed"
+  tail -n 40 "$VAT_INV_LOG" || true
+  exit 1
+fi
+
 run_nb "30_generate_bills_summary.ipynb" fail
 run_nb "31_vat_purchase_report_excel.ipynb" fail
 run_nb "32_vat_sales_report_excel.ipynb" fail
