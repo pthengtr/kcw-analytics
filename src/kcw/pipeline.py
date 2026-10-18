@@ -480,6 +480,12 @@ def cmd_fifo_proof(args: argparse.Namespace) -> int:
     return run_proof(args.site)
 
 
+def cmd_vat_inventory(_args: argparse.Namespace) -> int:
+    from src.kcw.vat_inventory_job import run
+
+    return run()
+
+
 def cmd_fifo_backfill(args: argparse.Namespace) -> int:
     from src.kcw.fifo_job import run_backfill
 
@@ -980,6 +986,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     fifo.add_argument("--site", choices=("hq", "syp"), default="hq")
     fifo.set_defaults(func=cmd_fifo_proof)
+
+    vat_inv = sub.add_parser(
+        "vat-inventory",
+        help="Rebuild the VAT-only inventory book in schema fifo",
+    )
+    vat_inv.set_defaults(func=cmd_vat_inventory)
 
     fifob = sub.add_parser(
         "fifo-backfill",
