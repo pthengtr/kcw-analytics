@@ -428,3 +428,4 @@ def test_credit_note_shows_the_sale_it_reverses():
     assert note.unit_cost == 8
     assert note.cost_billno == "PI1"
     assert by_bill["TAR2"].unit_cost is None
+    assert by_bill["TAR2"].ref_billno == "CNTAR1"
