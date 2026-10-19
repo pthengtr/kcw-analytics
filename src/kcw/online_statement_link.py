@@ -613,8 +613,8 @@ def parse_shopee_workbook(wb, *, shop: str, source_file: str) -> list[Payout]:
 def reconcile_shopee_pickup_fees(payouts: list[Payout], credits: list[BankCredit]) -> None:
     """Fill the pickup fee the income report omits, when one bank credit fits.
 
-    The credit is the released total minus 30 baht per pickup, paid within a
-    week of the period end. An exact payout amount keeps the credit for the
+    The credit is the released total minus 30 baht per pickup, paid within
+    10 days of the period end. An exact payout amount keeps the credit for the
     normal matcher. Ambiguous gaps are left unchanged.
     """
     reserved = {
@@ -1052,8 +1052,10 @@ class BankDeposit:
 
 
 # One Lazada/Shopee/TikTok bank credit is a shop's settlement week, paid a few days later.
+# 10 days covers the usual 3–6 day Lazada lag plus one holiday slip (the 6 Oct 2026
+# LAZ2 payout of 509.66 reached the bank on 15 Oct).
 _MAX_SETTLEMENT_SPAN_DAYS = 6
-_MAX_BANK_LAG_DAYS = 7
+_MAX_BANK_LAG_DAYS = 10
 
 
 def bank_platform(description: str) -> str | None:
@@ -1080,7 +1082,7 @@ def match_bank_deposits(
     """Link a bank credit to the statement days that sum to the same amount.
 
     A match is one shop, a window of at most seven calendar days, paid within
-    a week after the last statement day. Ambiguous sums are left unlinked.
+    10 days after the last statement day. Ambiguous sums are left unlinked.
     """
     grouped: dict[tuple[str, str], list[Payout]] = {}
     for payout in payouts:
