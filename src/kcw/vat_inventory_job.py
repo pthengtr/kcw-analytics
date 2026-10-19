@@ -8,17 +8,19 @@ from io import StringIO
 
 import pandas as pd
 
-from src.kcw.fifo_cost import unit_cost_ex_vat
+from src.kcw.fifo_cost import is_transfer_bill, unit_cost_ex_vat
 from src.kcw.vat_inventory import (
     KIND_RV,
     KIND_SA,
     KIND_SALE,
     KIND_TAR,
+    KIND_TF,
     YEAR_START,
     Flow,
     Receipt,
+    SiteBook,
     VatProduct,
-    build_vat_product,
+    build_hq_and_syp,
     document_kind,
     is_service_bcode,
     sale_unit_price,
@@ -68,30 +70,15 @@ FROM dbo.ICMAS WITH (NOLOCK)
 
 
 class _Book:
-    __slots__ = (
-        "descr",
-        "actual",
-        "ytd_pi",
-        "ytd_si",
-        "pre",
-        "purchases",
-        "sales",
-        "rvs",
-        "tars",
-        "adjustments",
-    )
+    __slots__ = ("descr", "hq", "syp")
 
     def __init__(self) -> None:
         self.descr = ""
-        self.actual = 0.0
-        self.ytd_pi = 0.0
-        self.ytd_si = 0.0
-        self.pre: list[Receipt] = []
-        self.purchases: list[Flow] = []
-        self.sales: list[Flow] = []
-        self.rvs: list[Flow] = []
-        self.tars: list[Flow] = []
-        self.adjustments: list[Flow] = []
+        self.hq = SiteBook()
+        self.syp = SiteBook()
+
+    def side(self, site: str) -> SiteBook:
+        return self.syp if site == "syp" else self.hq
 
 
 def _as_date(value) -> date | None:
@@ -136,13 +123,15 @@ def _read(site: str, sql: str, label: str) -> pd.DataFrame:
     return frame
 
 
-def _add_icmas(books: dict[str, _Book], frame: pd.DataFrame, *, prefer_descr: bool) -> None:
+def _add_icmas(
+    books: dict[str, _Book], frame: pd.DataFrame, *, site: str, prefer_descr: bool
+) -> None:
     for row in frame.itertuples(index=False):
         bcode = _text(row.bcode)
         if not bcode:
             continue
         book = books[bcode]
-        book.actual += _num(row.qtyoh)
+        book.side(site).actual += _num(row.qtyoh)
         descr = _text(row.descr)
         if descr and (prefer_descr or not book.descr):
             book.descr = descr
@@ -157,14 +146,31 @@ def _add_pidet(books: dict[str, _Book], frame: pd.DataFrame, site: str) -> None:
         units = _num(row.units)
         if abs(units) <= 1e-9:
             continue
-        book = books[bcode]
+        side = books[bcode].side(site)
         is_vat = _text(row.isvat).upper() == "Y"
         cost = unit_cost_ex_vat(_num(row.amount), abs(units), _text(row.taxic))
         billno = _text(row.billno)
+        if is_transfer_bill(billno):
+            if billdate >= YEAR_START:
+                side.ytd_pi += units
+            elif units > 1e-9:
+                side.pre_transfer.append(
+                    Receipt(
+                        line_id=int(_num(row.line_id)),
+                        billno=billno,
+                        billdate=billdate,
+                        units=units,
+                        unit_cost=cost or 0.0,
+                        is_vat=is_vat,
+                        supplier=_text(row.supplier) or None,
+                        site=site,
+                    )
+                )
+            continue
         if billdate >= YEAR_START:
-            book.ytd_pi += units
+            side.ytd_pi += units
             if is_vat:
-                book.purchases.append(
+                side.purchases.append(
                     Flow(
                         billdate=billdate,
                         billno=billno,
@@ -176,7 +182,7 @@ def _add_pidet(books: dict[str, _Book], frame: pd.DataFrame, site: str) -> None:
                     )
                 )
         elif units > 1e-9:
-            book.pre.append(
+            side.pre_supplier.append(
                 Receipt(
                     line_id=int(_num(row.line_id)),
                     billno=billno,
@@ -199,14 +205,21 @@ def _add_sidet(books: dict[str, _Book], frame: pd.DataFrame, site: str) -> None:
         units = _num(row.units)
         if abs(units) <= 1e-9:
             continue
-        book = books[bcode]
-        book.ytd_si += units
-        kind = document_kind(_text(row.billno))
+        side = books[bcode].side(site)
+        side.ytd_si += units
+        billno = _text(row.billno)
+        if is_transfer_bill(billno):
+            if units > 1e-9:
+                side.transfer_out.append(
+                    Flow(billdate=billdate, billno=billno, units=units, kind=KIND_TF, site=site)
+                )
+            continue
+        kind = document_kind(billno)
         if kind == KIND_SALE:
-            book.sales.append(
+            side.sales.append(
                 Flow(
                     billdate=billdate,
-                    billno=_text(row.billno),
+                    billno=billno,
                     units=units,
                     kind=KIND_SALE,
                     site=site,
@@ -220,7 +233,7 @@ def _add_sidet(books: dict[str, _Book], frame: pd.DataFrame, site: str) -> None:
                 )
             )
         elif kind == KIND_SA:
-            book.adjustments.append(
+            side.adjustments.append(
                 Flow(billdate=billdate, billno=_text(row.billno), units=units, kind=KIND_SA, site=site)
             )
 
@@ -248,7 +261,7 @@ def _add_generated(books: dict[str, _Book], frame: pd.DataFrame, *, kind: str, s
                 price=_num(row.price),
                 mtp=mtp,
             )
-        books[bcode].__getattribute__("rvs" if kind == KIND_RV else "tars").append(
+        books[bcode].side(site).__getattribute__("rvs" if kind == KIND_RV else "tars").append(
             Flow(
                 billdate=billdate,
                 billno=_text(row.new_billno),
@@ -314,21 +327,9 @@ def build_products(books: dict[str, _Book]) -> list[VatProduct]:
     for bcode, book in books.items():
         if is_service_bcode(bcode):
             continue
-        product = build_vat_product(
-            bcode=bcode,
-            descr=book.descr,
-            actual_qty=book.actual,
-            pre_receipts=book.pre,
-            ytd_purchase_units=book.ytd_pi,
-            ytd_issue_units=book.ytd_si,
-            purchases=book.purchases,
-            sales=book.sales,
-            rvs=book.rvs,
-            tars=book.tars,
-            adjustments=book.adjustments,
+        products.extend(
+            build_hq_and_syp(bcode=bcode, descr=book.descr, hq=book.hq, syp=book.syp)
         )
-        if product is not None:
-            products.append(product)
     return products
 
 
@@ -344,7 +345,9 @@ def _write(products: list[VatProduct], rebuilt_at: datetime) -> None:
     import psycopg
 
     product_buf = StringIO()
-    product_buf.write("bcode,descr,qty,value,uncovered_qty,open_qty,purchase_qty,rv_qty,sale_qty,tar_qty,sa_qty,actual_qty,rebuilt_at\n")
+    product_buf.write(
+        "bcode,site,descr,qty,value,uncovered_qty,open_qty,purchase_qty,rv_qty,sale_qty,tar_qty,sa_qty,tf_qty,actual_qty,rebuilt_at\n"
+    )
     layer_buf = StringIO()
     layer_buf.write("bcode,source,billno,billdate,supplier,site,qty,unit_cost\n")
     move_buf = StringIO()
@@ -357,6 +360,7 @@ def _write(products: list[VatProduct], rebuilt_at: datetime) -> None:
             ",".join(
                 [
                     _csv(product.bcode),
+                    _csv(product.site),
                     _csv(product.descr),
                     _num_csv(product.qty),
                     _num_csv(product.value),
@@ -367,6 +371,7 @@ def _write(products: list[VatProduct], rebuilt_at: datetime) -> None:
                     _num_csv(product.sale_qty),
                     _num_csv(product.tar_qty),
                     _num_csv(product.sa_qty),
+                    _num_csv(product.tf_qty),
                     _num_csv(product.actual_qty),
                     stamp,
                 ]
@@ -430,8 +435,8 @@ def _write(products: list[VatProduct], rebuilt_at: datetime) -> None:
                 product_buf,
                 """
                 COPY fifo.vat_product (
-                    bcode, descr, qty, value, uncovered_qty, open_qty, purchase_qty,
-                    rv_qty, sale_qty, tar_qty, sa_qty, actual_qty, rebuilt_at
+                    bcode, site, descr, qty, value, uncovered_qty, open_qty, purchase_qty,
+                    rv_qty, sale_qty, tar_qty, sa_qty, tf_qty, actual_qty, rebuilt_at
                 ) FROM STDIN WITH (FORMAT CSV, HEADER TRUE)
                 """,
             )
@@ -467,7 +472,7 @@ def _csv(value: str) -> str:
 def run() -> int:
     books: dict[str, _Book] = defaultdict(_Book)
     for site, prefer in (("hq", True), ("syp", False)):
-        _add_icmas(books, _read(site, _ICMAS_SQL, "icmas"), prefer_descr=prefer)
+        _add_icmas(books, _read(site, _ICMAS_SQL, "icmas"), site=site, prefer_descr=prefer)
         _add_pidet(books, _read(site, _PIDET_SQL, "pidet"), site)
         _add_sidet(books, _read(site, _SIDET_SQL, "sidet"), site)
     generated = _generated_frames()

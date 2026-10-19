@@ -6,8 +6,11 @@ from src.kcw.vat_inventory import (
     KIND_SA,
     KIND_SALE,
     KIND_TAR,
+    KIND_TF,
     Flow,
     Receipt,
+    SiteBook,
+    build_hq_and_syp,
     build_vat_product,
     document_kind,
     peel_opening,
@@ -278,3 +281,86 @@ def test_movement_keeps_the_transaction_sale_price():
     purchase = next(row for row in product.movements if row.kind == KIND_PI)
     assert purchase.unit_cost == 6
     assert purchase.sale_price is None
+
+
+def test_transfer_leaves_hq_and_arrives_at_syp_with_the_same_fifo_cost():
+    products = build_hq_and_syp(
+        bcode="T",
+        descr="moved",
+        hq=SiteBook(
+            actual=6,
+            ytd_pi=10,
+            ytd_si=4,
+            purchases=[_flow(KIND_PI, 10, "PI-HQ", cost=5)],
+            transfer_out=[_flow(KIND_TF, 4, "TFV6901-001")],
+        ),
+        syp=SiteBook(actual=4, ytd_pi=4),
+    )
+    by_site = {row.site: row for row in products}
+    hq = by_site["hq"]
+    syp = by_site["syp"]
+    assert hq.qty == 6
+    assert hq.tf_qty == -4
+    assert syp.qty == 4
+    assert syp.tf_qty == 4
+    assert syp.purchase_qty == 0
+    hq_tf = next(row for row in hq.movements if row.kind == KIND_TF)
+    syp_tf = next(row for row in syp.movements if row.kind == KIND_TF)
+    assert hq_tf.qty == -4
+    assert syp_tf.qty == 4
+    assert hq_tf.billno == "TFV6901-001"
+    assert syp_tf.billno == "TFV6901-001"
+    assert hq_tf.unit_cost == 5
+    assert syp_tf.unit_cost == 5
+    assert hq_tf.cost_billno == "PI-HQ"
+    assert syp_tf.cost_billno == "PI-HQ"
+    assert abs(hq.qty + syp.qty - 10) < 1e-9
+
+
+def test_transfer_moves_only_the_vat_qty_fifo_can_cost():
+    product = build_vat_product(
+        bcode="T2",
+        descr="partial",
+        actual_qty=0,
+        pre_receipts=[],
+        ytd_purchase_units=5,
+        ytd_issue_units=8,
+        purchases=[_flow(KIND_PI, 5, "PI", cost=3)],
+        sales=[],
+        rvs=[],
+        tars=[],
+        adjustments=[],
+        transfers_out=[_flow(KIND_TF, 8, "TFV6902-001")],
+        site="hq",
+    )
+    assert product is not None
+    assert product.qty == 0
+    assert product.tf_qty == -5
+    transfer = next(row for row in product.movements if row.kind == KIND_TF)
+    assert transfer.qty == -5
+    assert transfer.unit_cost == 3
+
+
+def test_syp_opening_takes_the_oldest_vat_layers():
+    products = build_hq_and_syp(
+        bcode="O",
+        descr="open",
+        hq=SiteBook(
+            actual=4,
+            pre_supplier=[
+                _receipt(date(2025, 1, 1), 6, True, "OLD", 1, cost=4),
+                _receipt(date(2025, 6, 1), 4, True, "NEW", 2, cost=9),
+            ],
+        ),
+        syp=SiteBook(
+            actual=6,
+            pre_transfer=[_receipt(date(2025, 12, 1), 6, False, "TFV6812-001", 3)],
+        ),
+    )
+    by_site = {row.site: row for row in products}
+    assert by_site["syp"].open_qty == 6
+    assert by_site["syp"].layers[0].billno == "OLD"
+    assert by_site["syp"].layers[0].unit_cost == 4
+    assert by_site["hq"].open_qty == 4
+    assert by_site["hq"].layers[0].billno == "NEW"
+    assert by_site["hq"].layers[0].unit_cost == 9
