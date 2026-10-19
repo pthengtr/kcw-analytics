@@ -341,6 +341,32 @@ def test_transfer_moves_only_the_vat_qty_fifo_can_cost():
     assert transfer.unit_cost == 3
 
 
+def test_opening_peel_uses_the_book_year():
+    layers, left = peel_opening(
+        4,
+        [_receipt(date(2026, 6, 1), 4, True, "V26", 1, cost=5)],
+        year_start=date(2027, 1, 1),
+    )
+    assert left == 0
+    assert layers[0].billno == "V26"
+    assert layers[0].qty == 4
+    later, _rest = peel_opening(
+        4,
+        [_receipt(date(2026, 6, 1), 4, True, "V26", 1, cost=5)],
+        year_start=date(2026, 1, 1),
+    )
+    assert later == []
+
+
+def test_closed_year_stays_frozen_and_the_next_year_is_created():
+    from src.kcw.vat_inventory_job import should_rebuild_year
+
+    assert should_rebuild_year(2026, 2026, False) is True
+    assert should_rebuild_year(2026, 2027, True) is False
+    assert should_rebuild_year(2027, 2027, False) is True
+    assert should_rebuild_year(2028, 2027, False) is False
+
+
 def test_syp_opening_takes_the_oldest_vat_layers():
     products = build_hq_and_syp(
         bcode="O",

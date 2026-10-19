@@ -294,12 +294,14 @@ def _positive(units: float) -> bool:
     return units > QTY_EPS
 
 
-def peel_opening(on_hand: float, receipts: list[Receipt]) -> tuple[list[Layer], float]:
+def peel_opening(
+    on_hand: float, receipts: list[Receipt], *, year_start: date = YEAR_START
+) -> tuple[list[Layer], float]:
     """Cover 1 Jan qty from newest older receipts. Keep only VAT slices."""
 
     left = max(float(on_hand or 0.0), 0.0)
     ordered = sorted(
-        (row for row in receipts if _positive(row.units) and row.billdate < YEAR_START),
+        (row for row in receipts if _positive(row.units) and row.billdate < year_start),
         key=lambda row: (row.billdate, row.site, row.line_id),
         reverse=True,
     )
@@ -360,13 +362,13 @@ def _sum_units(rows: list[Flow]) -> float:
     return float(sum(row.units for row in rows))
 
 
-def transfer_cover(on_hand: float, receipts: list[Receipt]) -> float:
-    """How much of `on_hand` sits on pre-2026 transfer receipts, newest first."""
+def transfer_cover(on_hand: float, receipts: list[Receipt], *, year_start: date = YEAR_START) -> float:
+    """How much of `on_hand` sits on transfer receipts from before the year, newest first."""
 
     left = max(float(on_hand or 0.0), 0.0)
     covered = 0.0
     ordered = sorted(
-        (row for row in receipts if _positive(row.units) and row.billdate < YEAR_START),
+        (row for row in receipts if _positive(row.units) and row.billdate < year_start),
         key=lambda row: (row.billdate, row.site, row.line_id),
         reverse=True,
     )
@@ -435,6 +437,7 @@ def build_vat_product(
     transfers_in: list[Flow] | None = None,
     opening_layers: list[Layer] | None = None,
     site: str = "hq",
+    year_start: date = YEAR_START,
 ) -> VatProduct | None:
     if is_service_bcode(bcode):
         return None
@@ -443,7 +446,7 @@ def build_vat_product(
     inbound = [replace(row, inbound=True, site=site) for row in (transfers_in or [])]
     if opening_layers is None:
         actual_1_jan = float(actual_qty) - float(ytd_purchase_units) + float(ytd_issue_units)
-        open_layers, _uncovered_open = peel_opening(actual_1_jan, pre_receipts)
+        open_layers, _uncovered_open = peel_opening(actual_1_jan, pre_receipts, year_start=year_start)
     else:
         open_layers = [replace(row, site=site) for row in opening_layers]
     open_qty = sum(layer.qty for layer in open_layers)
@@ -490,7 +493,7 @@ def build_vat_product(
 
     flows: list[tuple[int, Flow]] = []
     for row in purchases + rvs + sales + tars + adjustments + inbound + outbound:
-        if row.billdate < YEAR_START:
+        if row.billdate < year_start:
             continue
         flows.append((_kind_rank(row.kind), row))
     flows.sort(key=lambda item: (item[1].billdate, item[0], item[1].billno, item[1].site))
@@ -498,7 +501,7 @@ def build_vat_product(
     balance = open_qty
     movements = [
         Movement(
-            billdate=YEAR_START,
+            billdate=year_start,
             billno="",
             kind=KIND_OPEN,
             site=site,
@@ -580,6 +583,7 @@ def build_hq_and_syp(
     descr: str,
     hq: SiteBook,
     syp: SiteBook,
+    year_start: date = YEAR_START,
 ) -> list[VatProduct]:
     """Two VAT books. A costed HQ transfer arrives at SYP with the same FIFO cost."""
 
@@ -595,11 +599,13 @@ def build_hq_and_syp(
         + float(syp.ytd_si)
     )
     company_layers, _uncovered = peel_opening(
-        company_1_jan, list(hq.pre_supplier) + list(syp.pre_supplier)
+        company_1_jan,
+        list(hq.pre_supplier) + list(syp.pre_supplier),
+        year_start=year_start,
     )
     syp_1_jan = float(syp.actual) - float(syp.ytd_pi) + float(syp.ytd_si)
     syp_open, hq_open = split_opening_layers(
-        company_layers, transfer_cover(syp_1_jan, syp.pre_transfer)
+        company_layers, transfer_cover(syp_1_jan, syp.pre_transfer, year_start=year_start)
     )
 
     def build_site(book: SiteBook, site: str, opening: list[Layer], inbound: list[Flow]) -> VatProduct | None:
@@ -619,6 +625,7 @@ def build_hq_and_syp(
             transfers_in=inbound,
             opening_layers=opening,
             site=site,
+            year_start=year_start,
         )
 
     hq_inbound: list[Flow] = []
