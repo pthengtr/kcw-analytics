@@ -480,10 +480,10 @@ def cmd_fifo_proof(args: argparse.Namespace) -> int:
     return run_proof(args.site)
 
 
-def cmd_vat_inventory(_args: argparse.Namespace) -> int:
+def cmd_vat_inventory(args: argparse.Namespace) -> int:
     from src.kcw.vat_inventory_job import run
 
-    return run()
+    return run(year=args.year)
 
 
 def cmd_fifo_backfill(args: argparse.Namespace) -> int:
@@ -989,7 +989,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     vat_inv = sub.add_parser(
         "vat-inventory",
-        help="Rebuild the VAT-only inventory book in schema fifo",
+        help="Rebuild the open VAT inventory year. A closed year is left frozen.",
+    )
+    vat_inv.add_argument(
+        "--year",
+        type=int,
+        default=None,
+        help="Book year (default: this year in Asia/Bangkok). A past year that is already stored is not rebuilt.",
     )
     vat_inv.set_defaults(func=cmd_vat_inventory)
 

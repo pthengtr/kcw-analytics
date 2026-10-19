@@ -15,7 +15,6 @@ from src.kcw.vat_inventory import (
     KIND_SALE,
     KIND_TAR,
     KIND_TF,
-    YEAR_START,
     Flow,
     Receipt,
     SiteBook,
@@ -57,7 +56,8 @@ SELECT
 FROM dbo.SIDET AS d WITH (NOLOCK)
 WHERE UPPER(LTRIM(RTRIM(ISNULL(d.CANCELED, N'')))) <> N'Y'
   AND LTRIM(RTRIM(ISNULL(d.JOURMODE, N''))) <> N'0'
-  AND d.BILLDATE >= '20260101'
+  AND d.BILLDATE >= '{start}'
+  AND d.BILLDATE < '{end}'
 """
 
 _ICMAS_SQL = """
@@ -137,7 +137,14 @@ def _add_icmas(
             book.descr = descr
 
 
-def _add_pidet(books: dict[str, _Book], frame: pd.DataFrame, site: str) -> None:
+def _add_pidet(
+    books: dict[str, _Book],
+    frame: pd.DataFrame,
+    site: str,
+    *,
+    year_start: date,
+    year_end: date,
+) -> None:
     for row in frame.itertuples(index=False):
         bcode = _text(row.bcode)
         billdate = _as_date(row.billdate)
@@ -150,8 +157,10 @@ def _add_pidet(books: dict[str, _Book], frame: pd.DataFrame, site: str) -> None:
         is_vat = _text(row.isvat).upper() == "Y"
         cost = unit_cost_ex_vat(_num(row.amount), abs(units), _text(row.taxic))
         billno = _text(row.billno)
+        if billdate >= year_end:
+            continue
         if is_transfer_bill(billno):
-            if billdate >= YEAR_START:
+            if billdate >= year_start:
                 side.ytd_pi += units
             elif units > 1e-9:
                 side.pre_transfer.append(
@@ -167,7 +176,7 @@ def _add_pidet(books: dict[str, _Book], frame: pd.DataFrame, site: str) -> None:
                     )
                 )
             continue
-        if billdate >= YEAR_START:
+        if billdate >= year_start:
             side.ytd_pi += units
             if is_vat:
                 side.purchases.append(
@@ -196,11 +205,18 @@ def _add_pidet(books: dict[str, _Book], frame: pd.DataFrame, site: str) -> None:
             )
 
 
-def _add_sidet(books: dict[str, _Book], frame: pd.DataFrame, site: str) -> None:
+def _add_sidet(
+    books: dict[str, _Book],
+    frame: pd.DataFrame,
+    site: str,
+    *,
+    year_start: date,
+    year_end: date,
+) -> None:
     for row in frame.itertuples(index=False):
         bcode = _text(row.bcode)
         billdate = _as_date(row.billdate)
-        if not bcode or billdate is None or billdate < YEAR_START:
+        if not bcode or billdate is None or billdate < year_start or billdate >= year_end:
             continue
         units = _num(row.units)
         if abs(units) <= 1e-9:
@@ -238,13 +254,21 @@ def _add_sidet(books: dict[str, _Book], frame: pd.DataFrame, site: str) -> None:
             )
 
 
-def _add_generated(books: dict[str, _Book], frame: pd.DataFrame, *, kind: str, site: str) -> None:
+def _add_generated(
+    books: dict[str, _Book],
+    frame: pd.DataFrame,
+    *,
+    kind: str,
+    site: str,
+    year_start: date,
+    year_end: date,
+) -> None:
     if frame is None or frame.empty:
         return
     for row in frame.itertuples(index=False):
         bcode = _text(row.bcode)
         billdate = _as_date(row.billdate)
-        if not bcode or billdate is None:
+        if not bcode or billdate is None or billdate < year_start or billdate >= year_end:
             continue
         qty = _num(row.qty)
         mtp = _num(row.mtp) or 1.0
@@ -322,13 +346,19 @@ def _generated_frames() -> dict[str, pd.DataFrame]:
     return frames
 
 
-def build_products(books: dict[str, _Book]) -> list[VatProduct]:
+def build_products(books: dict[str, _Book], *, year_start: date) -> list[VatProduct]:
     products: list[VatProduct] = []
     for bcode, book in books.items():
         if is_service_bcode(bcode):
             continue
         products.extend(
-            build_hq_and_syp(bcode=bcode, descr=book.descr, hq=book.hq, syp=book.syp)
+            build_hq_and_syp(
+                bcode=bcode,
+                descr=book.descr,
+                hq=book.hq,
+                syp=book.syp,
+                year_start=year_start,
+            )
         )
     return products
 
@@ -339,20 +369,20 @@ def _num_csv(value: float | None) -> str:
     return f"{value:.6f}"
 
 
-def _write(products: list[VatProduct], rebuilt_at: datetime) -> None:
+def _write(products: list[VatProduct], rebuilt_at: datetime, *, year: int) -> None:
     from src.kcw.tar import supabase_db_url
 
     import psycopg
 
     product_buf = StringIO()
     product_buf.write(
-        "bcode,site,descr,qty,value,uncovered_qty,open_qty,purchase_qty,rv_qty,sale_qty,tar_qty,sa_qty,tf_qty,actual_qty,rebuilt_at\n"
+        "bcode,site,year,descr,qty,value,uncovered_qty,open_qty,purchase_qty,rv_qty,sale_qty,tar_qty,sa_qty,tf_qty,actual_qty,rebuilt_at\n"
     )
     layer_buf = StringIO()
-    layer_buf.write("bcode,source,billno,billdate,supplier,site,qty,unit_cost\n")
+    layer_buf.write("bcode,source,billno,billdate,supplier,site,year,qty,unit_cost\n")
     move_buf = StringIO()
     move_buf.write(
-        "bcode,billdate,billno,kind,site,qty,unit_cost,balance,supplier,sale_price,cost_billno\n"
+        "bcode,billdate,billno,kind,site,year,qty,unit_cost,balance,supplier,sale_price,cost_billno\n"
     )
     stamp = rebuilt_at.isoformat()
     for product in products:
@@ -361,6 +391,7 @@ def _write(products: list[VatProduct], rebuilt_at: datetime) -> None:
                 [
                     _csv(product.bcode),
                     _csv(product.site),
+                    str(year),
                     _csv(product.descr),
                     _num_csv(product.qty),
                     _num_csv(product.value),
@@ -388,6 +419,7 @@ def _write(products: list[VatProduct], rebuilt_at: datetime) -> None:
                         layer.billdate.isoformat(),
                         _csv(layer.supplier or ""),
                         _csv(layer.site),
+                        str(year),
                         _num_csv(layer.qty),
                         _num_csv(layer.unit_cost),
                     ]
@@ -403,6 +435,7 @@ def _write(products: list[VatProduct], rebuilt_at: datetime) -> None:
                         _csv(move.billno),
                         move.kind,
                         _csv(move.site),
+                        str(year),
                         _num_csv(move.qty),
                         _num_csv(move.unit_cost),
                         _num_csv(move.balance),
@@ -429,13 +462,15 @@ def _write(products: list[VatProduct], rebuilt_at: datetime) -> None:
                 "alter table fifo.vat_movement "
                 "add column if not exists cost_billno text"
             )
-            cur.execute("truncate table fifo.vat_movement, fifo.vat_layer, fifo.vat_product")
+            cur.execute("delete from fifo.vat_movement where year = %s", (year,))
+            cur.execute("delete from fifo.vat_layer where year = %s", (year,))
+            cur.execute("delete from fifo.vat_product where year = %s", (year,))
             copy_into(
                 cur,
                 product_buf,
                 """
                 COPY fifo.vat_product (
-                    bcode, site, descr, qty, value, uncovered_qty, open_qty, purchase_qty,
+                    bcode, site, year, descr, qty, value, uncovered_qty, open_qty, purchase_qty,
                     rv_qty, sale_qty, tar_qty, sa_qty, tf_qty, actual_qty, rebuilt_at
                 ) FROM STDIN WITH (FORMAT CSV, HEADER TRUE)
                 """,
@@ -445,7 +480,7 @@ def _write(products: list[VatProduct], rebuilt_at: datetime) -> None:
                 layer_buf,
                 """
                 COPY fifo.vat_layer (
-                    bcode, source, billno, billdate, supplier, site, qty, unit_cost
+                    bcode, source, billno, billdate, supplier, site, year, qty, unit_cost
                 ) FROM STDIN WITH (FORMAT CSV, HEADER TRUE)
                 """,
             )
@@ -454,7 +489,7 @@ def _write(products: list[VatProduct], rebuilt_at: datetime) -> None:
                 move_buf,
                 """
                 COPY fifo.vat_movement (
-                    bcode, billdate, billno, kind, site, qty, unit_cost, balance, supplier,
+                    bcode, billdate, billno, kind, site, year, qty, unit_cost, balance, supplier,
                     sale_price, cost_billno
                 ) FROM STDIN WITH (FORMAT CSV, HEADER TRUE)
                 """,
@@ -469,22 +504,73 @@ def _csv(value: str) -> str:
     return text
 
 
-def run() -> int:
+def should_rebuild_year(target: int, today_year: int, already_stored: bool) -> bool:
+    """A closed year stays as it was. The open year is rebuilt, and a new year is created on the first run after 1 Jan."""
+
+    if target > today_year:
+        return False
+    if target < today_year and already_stored:
+        return False
+    return True
+
+
+def _year_stored(year: int) -> bool:
+    from src.kcw.tar import supabase_db_url
+
+    import psycopg
+
+    with psycopg.connect(supabase_db_url(), connect_timeout=20) as conn:
+        with conn.cursor() as cur:
+            cur.execute("select exists(select 1 from fifo.vat_product where year = %s)", (year,))
+            row = cur.fetchone()
+    return bool(row and row[0])
+
+
+def run(year: int | None = None) -> int:
+    from zoneinfo import ZoneInfo
+
+    today = datetime.now(ZoneInfo("Asia/Bangkok")).date()
+    target = today.year if year is None else int(year)
+    if not should_rebuild_year(target, today.year, _year_stored(target) if target < today.year else False):
+        print(f"[vat-inventory] year={target} stays frozen", flush=True)
+        return 0
+    year_start = date(target, 1, 1)
+    year_end = date(target + 1, 1, 1)
+    print(f"[vat-inventory] build year={target}", flush=True)
+    sidet_sql = _SIDET_SQL.format(start=f"{target}0101", end=f"{target + 1}0101")
     books: dict[str, _Book] = defaultdict(_Book)
     for site, prefer in (("hq", True), ("syp", False)):
         _add_icmas(books, _read(site, _ICMAS_SQL, "icmas"), site=site, prefer_descr=prefer)
-        _add_pidet(books, _read(site, _PIDET_SQL, "pidet"), site)
-        _add_sidet(books, _read(site, _SIDET_SQL, "sidet"), site)
+        _add_pidet(
+            books,
+            _read(site, _PIDET_SQL, "pidet"),
+            site,
+            year_start=year_start,
+            year_end=year_end,
+        )
+        _add_sidet(
+            books,
+            _read(site, sidet_sql, "sidet"),
+            site,
+            year_start=year_start,
+            year_end=year_end,
+        )
     generated = _generated_frames()
-    _add_generated(books, generated["rv"], kind=KIND_RV, site="hq")
-    _add_generated(books, generated["3rv"], kind=KIND_RV, site="syp")
+    _add_generated(
+        books, generated["rv"], kind=KIND_RV, site="hq", year_start=year_start, year_end=year_end
+    )
+    _add_generated(
+        books, generated["3rv"], kind=KIND_RV, site="syp", year_start=year_start, year_end=year_end
+    )
     for name, site in (("tar", "hq"), ("cntar", "hq"), ("3tar", "syp"), ("3cntar", "syp")):
-        _add_generated(books, generated[name], kind=KIND_TAR, site=site)
+        _add_generated(
+            books, generated[name], kind=KIND_TAR, site=site, year_start=year_start, year_end=year_end
+        )
     print(f"[vat-inventory] products in memory={len(books)}", flush=True)
-    products = build_products(books)
+    products = build_products(books, year_start=year_start)
     print(f"[vat-inventory] listed={len(products)}", flush=True)
-    _write(products, datetime.now(timezone.utc))
+    _write(products, datetime.now(timezone.utc), year=target)
     qty = sum(row.qty for row in products)
     value = sum(row.value for row in products)
-    print(f"[vat-inventory] qty={qty:.2f} value={value:.2f}", flush=True)
+    print(f"[vat-inventory] year={target} qty={qty:.2f} value={value:.2f}", flush=True)
     return 0
