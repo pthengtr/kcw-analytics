@@ -21,6 +21,7 @@ from src.kcw.vat_inventory import (
     build_vat_product,
     document_kind,
     is_service_bcode,
+    sale_unit_price,
 )
 
 _PIDET_SQL = """
@@ -46,7 +47,11 @@ SELECT
     CONVERT(nvarchar(50), d.BILLNO) AS billno,
     d.BILLDATE AS billdate,
     CONVERT(float, ISNULL(d.QTY, 0))
-        * COALESCE(NULLIF(CONVERT(float, d.MTP), 0), 1.0) AS units
+        * COALESCE(NULLIF(CONVERT(float, d.MTP), 0), 1.0) AS units,
+    CONVERT(float, ISNULL(d.AMOUNT, 0)) AS amount,
+    CONVERT(float, ISNULL(d.PRICE, 0)) AS price,
+    COALESCE(NULLIF(CONVERT(float, d.MTP), 0), 1.0) AS mtp,
+    UPPER(LTRIM(RTRIM(ISNULL(d.TAXIC, N'')))) AS taxic
 FROM dbo.SIDET AS d WITH (NOLOCK)
 WHERE UPPER(LTRIM(RTRIM(ISNULL(d.CANCELED, N'')))) <> N'Y'
   AND LTRIM(RTRIM(ISNULL(d.JOURMODE, N''))) <> N'0'
@@ -154,7 +159,7 @@ def _add_pidet(books: dict[str, _Book], frame: pd.DataFrame, site: str) -> None:
             continue
         book = books[bcode]
         is_vat = _text(row.isvat).upper() == "Y"
-        cost = unit_cost_ex_vat(_num(row.amount), units, _text(row.taxic)) or 0.0
+        cost = unit_cost_ex_vat(_num(row.amount), abs(units), _text(row.taxic))
         billno = _text(row.billno)
         if billdate >= YEAR_START:
             book.ytd_pi += units
@@ -166,7 +171,7 @@ def _add_pidet(books: dict[str, _Book], frame: pd.DataFrame, site: str) -> None:
                         units=units,
                         kind="PI",
                         site=site,
-                        unit_cost=cost,
+                        unit_cost=cost or 0.0,
                         supplier=_text(row.supplier) or None,
                     )
                 )
@@ -177,7 +182,7 @@ def _add_pidet(books: dict[str, _Book], frame: pd.DataFrame, site: str) -> None:
                     billno=billno,
                     billdate=billdate,
                     units=units,
-                    unit_cost=cost,
+                    unit_cost=cost or 0.0,
                     is_vat=is_vat,
                     supplier=_text(row.supplier) or None,
                     site=site,
@@ -199,7 +204,20 @@ def _add_sidet(books: dict[str, _Book], frame: pd.DataFrame, site: str) -> None:
         kind = document_kind(_text(row.billno))
         if kind == KIND_SALE:
             book.sales.append(
-                Flow(billdate=billdate, billno=_text(row.billno), units=units, kind=KIND_SALE, site=site)
+                Flow(
+                    billdate=billdate,
+                    billno=_text(row.billno),
+                    units=units,
+                    kind=KIND_SALE,
+                    site=site,
+                    sale_price=sale_unit_price(
+                        amount=_num(row.amount),
+                        units=units,
+                        taxic=_text(row.taxic),
+                        price=_num(row.price),
+                        mtp=_num(row.mtp),
+                    ),
+                )
             )
         elif kind == KIND_SA:
             book.adjustments.append(
@@ -221,6 +239,15 @@ def _add_generated(books: dict[str, _Book], frame: pd.DataFrame, *, kind: str, s
         if abs(units) <= 1e-9:
             continue
         cost = _num(row.last_cost) if kind == KIND_RV else None
+        sale_price = None
+        if kind == KIND_TAR:
+            sale_price = sale_unit_price(
+                amount=_num(row.amount),
+                units=units,
+                taxic="Y",
+                price=_num(row.price),
+                mtp=mtp,
+            )
         books[bcode].__getattribute__("rvs" if kind == KIND_RV else "tars").append(
             Flow(
                 billdate=billdate,
@@ -228,7 +255,8 @@ def _add_generated(books: dict[str, _Book], frame: pd.DataFrame, *, kind: str, s
                 units=units,
                 kind=kind,
                 site=site,
-                unit_cost=cost,
+                unit_cost=cost or None,
+                sale_price=sale_price,
             )
         )
 
@@ -239,12 +267,34 @@ def _generated_frames() -> dict[str, pd.DataFrame]:
     url = supabase_db_url()
     frames: dict[str, pd.DataFrame] = {}
     queries = {
-        "rv": "select billdate, new_billno, bcode, qty, mtp, last_cost from billgen.fin_rv_lines",
-        "3rv": "select billdate, new_billno, bcode, qty, mtp, last_cost from billgen.fin_3rv_lines",
-        "tar": "select billdate, new_billno, bcode, qty, mtp, 0::float8 as last_cost from billgen.fin_tar_lines",
-        "3tar": "select billdate, new_billno, bcode, qty, mtp, 0::float8 as last_cost from billgen.fin_3tar_lines",
-        "cntar": "select billdate, new_billno, bcode, qty, mtp, 0::float8 as last_cost from billgen.fin_cntar_lines",
-        "3cntar": "select billdate, new_billno, bcode, qty, mtp, 0::float8 as last_cost from billgen.fin_3cntar_lines",
+        "rv": """
+            select billdate, new_billno, bcode, qty, mtp, price, amount, last_cost
+            from billgen.fin_rv_lines
+        """,
+        "3rv": """
+            select billdate, new_billno, bcode, qty, mtp, price, amount, last_cost
+            from billgen.fin_3rv_lines
+        """,
+        "tar": """
+            select billdate, new_billno, bcode, qty, mtp, price, amount,
+                   null::float8 as last_cost
+            from billgen.fin_tar_lines
+        """,
+        "3tar": """
+            select billdate, new_billno, bcode, qty, mtp, price, amount,
+                   null::float8 as last_cost
+            from billgen.fin_3tar_lines
+        """,
+        "cntar": """
+            select billdate, new_billno, bcode, qty, mtp, price, amount,
+                   null::float8 as last_cost
+            from billgen.fin_cntar_lines
+        """,
+        "3cntar": """
+            select billdate, new_billno, bcode, qty, mtp, price, amount,
+                   null::float8 as last_cost
+            from billgen.fin_3cntar_lines
+        """,
     }
     import psycopg
 
@@ -298,7 +348,9 @@ def _write(products: list[VatProduct], rebuilt_at: datetime) -> None:
     layer_buf = StringIO()
     layer_buf.write("bcode,source,billno,billdate,supplier,site,qty,unit_cost\n")
     move_buf = StringIO()
-    move_buf.write("bcode,billdate,billno,kind,site,qty,unit_cost,balance,supplier\n")
+    move_buf.write(
+        "bcode,billdate,billno,kind,site,qty,unit_cost,balance,supplier,sale_price,cost_billno\n"
+    )
     stamp = rebuilt_at.isoformat()
     for product in products:
         product_buf.write(
@@ -350,6 +402,8 @@ def _write(products: list[VatProduct], rebuilt_at: datetime) -> None:
                         _num_csv(move.unit_cost),
                         _num_csv(move.balance),
                         _csv(move.supplier or ""),
+                        _num_csv(move.sale_price),
+                        _csv(move.cost_billno or ""),
                     ]
                 )
                 + "\n"
@@ -362,6 +416,14 @@ def _write(products: list[VatProduct], rebuilt_at: datetime) -> None:
 
     with psycopg.connect(supabase_db_url()) as conn:
         with conn.cursor() as cur:
+            cur.execute(
+                "alter table fifo.vat_movement "
+                "add column if not exists sale_price double precision"
+            )
+            cur.execute(
+                "alter table fifo.vat_movement "
+                "add column if not exists cost_billno text"
+            )
             cur.execute("truncate table fifo.vat_movement, fifo.vat_layer, fifo.vat_product")
             copy_into(
                 cur,
@@ -387,7 +449,8 @@ def _write(products: list[VatProduct], rebuilt_at: datetime) -> None:
                 move_buf,
                 """
                 COPY fifo.vat_movement (
-                    bcode, billdate, billno, kind, site, qty, unit_cost, balance, supplier
+                    bcode, billdate, billno, kind, site, qty, unit_cost, balance, supplier,
+                    sale_price, cost_billno
                 ) FROM STDIN WITH (FORMAT CSV, HEADER TRUE)
                 """,
             )

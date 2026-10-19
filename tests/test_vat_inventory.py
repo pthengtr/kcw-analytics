@@ -11,6 +11,7 @@ from src.kcw.vat_inventory import (
     build_vat_product,
     document_kind,
     peel_opening,
+    sale_unit_price,
 )
 
 
@@ -25,13 +26,14 @@ def _receipt(billdate, units, is_vat, billno="PI", line_id=1, cost=10.0):
     )
 
 
-def _flow(kind, units, billno, day=15, cost=None):
+def _flow(kind, units, billno, day=15, cost=None, sale_price=None):
     return Flow(
         billdate=date(2026, 3, day),
         billno=billno,
         units=units,
         kind=kind,
         unit_cost=cost,
+        sale_price=sale_price,
     )
 
 
@@ -195,3 +197,84 @@ def test_stock_adjustment_without_vat_flow_stays_out():
         )
         is None
     )
+
+
+def test_sale_unit_price_is_net_per_smallest_unit():
+    assert abs(sale_unit_price(amount=214, units=2, taxic="Y") - 100) < 1e-6
+    assert abs(sale_unit_price(amount=0, units=2, taxic="Y", price=214, mtp=2) - 100) < 1e-6
+    assert sale_unit_price(amount=0, units=1, taxic="N", price=0) is None
+
+
+def test_sale_cost_traces_to_the_older_purchase_bill():
+    product = build_vat_product(
+        bcode="F",
+        descr="fifo",
+        actual_qty=14,
+        pre_receipts=[],
+        ytd_purchase_units=20,
+        ytd_issue_units=6,
+        purchases=[
+            _flow(KIND_PI, 10, "PI-OLD", day=1, cost=4),
+            _flow(KIND_PI, 10, "PI-NEW", day=10, cost=9),
+        ],
+        sales=[_flow(KIND_SALE, 6, "TR1", day=15, sale_price=20)],
+        rvs=[],
+        tars=[],
+        adjustments=[],
+    )
+    assert product is not None
+    assert product.qty == 14
+    assert product.layers[0].billno == "PI-OLD"
+    assert product.layers[0].qty == 4
+    assert product.layers[1].billno == "PI-NEW"
+    sale = next(row for row in product.movements if row.kind == KIND_SALE)
+    assert sale.unit_cost == 4
+    assert sale.cost_billno == "PI-OLD"
+    assert sale.sale_price == 20
+
+
+def test_sale_cost_lists_every_purchase_bill_it_consumes():
+    product = build_vat_product(
+        bcode="G",
+        descr="split",
+        actual_qty=3,
+        pre_receipts=[],
+        ytd_purchase_units=10,
+        ytd_issue_units=7,
+        purchases=[
+            _flow(KIND_PI, 5, "PI-A", day=1, cost=4),
+            _flow(KIND_PI, 5, "PI-B", day=5, cost=6),
+        ],
+        sales=[_flow(KIND_SALE, 7, "TR2", day=10)],
+        rvs=[],
+        tars=[],
+        adjustments=[],
+    )
+    assert product is not None
+    sale = next(row for row in product.movements if row.kind == KIND_SALE)
+    assert abs(sale.unit_cost - ((5 * 4 + 2 * 6) / 7)) < 1e-9
+    assert sale.cost_billno == "PI-A, PI-B"
+
+
+def test_movement_keeps_the_transaction_sale_price():
+    product = build_vat_product(
+        bcode="F",
+        descr="priced",
+        actual_qty=1,
+        pre_receipts=[],
+        ytd_purchase_units=2,
+        ytd_issue_units=1,
+        purchases=[_flow(KIND_PI, 2, "PI3", cost=6)],
+        sales=[_flow(KIND_SALE, 1, "TR3", sale_price=15)],
+        rvs=[],
+        tars=[],
+        adjustments=[],
+    )
+    assert product is not None
+    sale = next(row for row in product.movements if row.kind == KIND_SALE)
+    assert sale.sale_price == 15
+    assert sale.unit_cost == 6
+    assert sale.cost_billno == "PI3"
+    purchase = next(row for row in product.movements if row.kind == KIND_PI)
+    assert purchase.unit_cost == 6
+    assert purchase.sale_price is None

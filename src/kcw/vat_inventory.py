@@ -14,12 +14,20 @@ Opening VAT qty is today's company on-hand walked back to 1 Jan, then peeled
 onto pre-2026 receipts, newest first. Only the slices that land on ISVAT=Y
 receipts enter the VAT book. Remaining qty is peeled the same way onto the
 VAT receipt pool (opening slices, 2026 VAT purchases, RV) for cost and origin.
+
+Each 2026 movement keeps that bill's net purchase cost and, for a sale or TAR,
+its net selling price. Both are per smallest unit and exclude VAT. A sale's
+cost is the backward FIFO cost: the newest VAT receipts stay on hand, and the
+older receipts are assigned to issues, oldest first. The purchase bill numbers
+of those receipts are kept on the sale.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
+
+from src.kcw.fifo_cost import unit_cost_ex_vat
 
 QTY_EPS = 1e-4
 YEAR_START = date(2026, 1, 1)
@@ -56,6 +64,8 @@ class Flow:
     kind: str
     site: str = "hq"
     unit_cost: float | None = None
+    sale_price: float | None = None
+    cost_billno: str | None = None
     supplier: str | None = None
 
 
@@ -79,6 +89,8 @@ class Movement:
     qty: float
     unit_cost: float | None
     balance: float
+    sale_price: float | None = None
+    cost_billno: str | None = None
     supplier: str | None = None
 
 
@@ -131,6 +143,112 @@ def document_kind(billno: str | None) -> str | None:
     ):
         return KIND_SALE
     return None
+
+
+def sale_unit_price(
+    *,
+    amount: float,
+    units: float,
+    taxic: str | None,
+    price: float | None = None,
+    mtp: float | None = None,
+) -> float | None:
+    """Net selling price per smallest unit. TAXIC=Y means the amount includes VAT."""
+
+    net = unit_cost_ex_vat(abs(float(amount or 0.0)), abs(float(units or 0.0)), taxic)
+    if net is not None:
+        return net
+    pack = abs(float(mtp or 0.0)) or 1.0
+    raw = abs(float(price or 0.0))
+    if raw <= QTY_EPS:
+        return None
+    net_price = raw * 100.0 / 107.0 if (taxic or "").strip().upper() == "Y" else raw
+    if net_price <= QTY_EPS:
+        return None
+    return net_price / pack
+
+
+def trace_sale_costs(
+    pool: list[Layer],
+    on_hand: float,
+    sales: list[Flow],
+    tars: list[Flow],
+    adjustments: list[Flow],
+) -> tuple[list[Flow], list[Flow]]:
+    """Assign leftover VAT receipts to sales after the newest receipts cover on-hand.
+
+    Same backward FIFO as the company cost book: newest layers stay in stock,
+    older layers are consumed by issues from oldest to newest. A sale keeps the
+    purchase bill numbers it consumed.
+    """
+
+    layers = [
+        {
+            "billno": row.billno,
+            "billdate": row.billdate,
+            "left": row.qty,
+            "unit_cost": row.unit_cost,
+        }
+        for row in pool
+        if _positive(row.qty)
+    ]
+    layers.sort(key=lambda row: (row["billdate"], row["billno"]), reverse=True)
+    reserve = max(float(on_hand or 0.0), 0.0)
+    for layer in layers:
+        if reserve <= QTY_EPS:
+            break
+        take = min(layer["left"], reserve)
+        layer["left"] -= take
+        reserve -= take
+    layers.sort(key=lambda row: (row["billdate"], row["billno"]))
+
+    cursor = 0
+    slots = (
+        [("sales", index, row) for index, row in enumerate(sales)]
+        + [("tars", index, row) for index, row in enumerate(tars)]
+        + [("adjustments", index, row) for index, row in enumerate(adjustments)]
+    )
+    slots.sort(
+        key=lambda item: (item[2].billdate, _kind_rank(item[2].kind), item[2].billno, item[2].site)
+    )
+    sales_out = list(sales)
+    tars_out = list(tars)
+    for group, index, row in slots:
+        if row.kind not in (KIND_SALE, KIND_TAR, KIND_SA) or not _positive(row.units):
+            continue
+        need = float(row.units)
+        allocs: list[tuple[str, float, float]] = []
+        extended = 0.0
+        costed = 0.0
+        while need > QTY_EPS and cursor < len(layers):
+            layer = layers[cursor]
+            if layer["left"] <= QTY_EPS:
+                cursor += 1
+                continue
+            take = min(need, layer["left"])
+            allocs.append((layer["billno"], layer["unit_cost"], take))
+            extended += take * layer["unit_cost"]
+            costed += take
+            need -= take
+            layer["left"] -= take
+            if layer["left"] <= QTY_EPS:
+                cursor += 1
+        if group == "adjustments" or costed <= QTY_EPS:
+            continue
+        bills: list[str] = []
+        for billno, _cost, _qty in allocs:
+            if billno and billno not in bills:
+                bills.append(billno)
+        stamped = replace(
+            row,
+            unit_cost=extended / costed,
+            cost_billno=", ".join(bills) or None,
+        )
+        if group == "sales":
+            sales_out[index] = stamped
+        else:
+            tars_out[index] = stamped
+    return sales_out, tars_out
 
 
 def stock_effect(kind: str, units: float) -> float:
@@ -279,6 +397,7 @@ def build_vat_product(
             )
     layers, _covered, value = peel_on_hand(qty, pool)
     uncovered = max(qty, 0.0) - sum(layer.qty for layer in layers)
+    sales, tars = trace_sale_costs(pool, qty, sales, tars, adjustments)
 
     flows: list[tuple[int, Flow]] = []
     for row in purchases + rvs + sales + tars + adjustments:
@@ -310,6 +429,8 @@ def build_vat_product(
                 qty=stock_effect(row.kind, row.units),
                 unit_cost=row.unit_cost,
                 balance=balance,
+                sale_price=row.sale_price,
+                cost_billno=row.cost_billno,
                 supplier=row.supplier,
             )
         )
