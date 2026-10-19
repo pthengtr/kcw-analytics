@@ -71,6 +71,7 @@ class Flow:
     cost_billno: str | None = None
     supplier: str | None = None
     inbound: bool = False
+    ref_billno: str | None = None
 
 
 @dataclass(frozen=True)
@@ -96,6 +97,7 @@ class Movement:
     sale_price: float | None = None
     cost_billno: str | None = None
     supplier: str | None = None
+    ref_billno: str | None = None
 
 
 @dataclass
@@ -280,6 +282,37 @@ def trace_sale_costs(
         else:
             transfers_out.append(stamped)
     return sales_out, tars_out, transfers_out
+
+
+def attach_return_costs(
+    sales: list[Flow], tars: list[Flow]
+) -> tuple[list[Flow], list[Flow]]:
+    """A credit note keeps the purchase cost of the sale it reverses.
+
+    The returned unit is not put back into the stock layers. Later sales stay
+    uncosted when no receipt is left. The credit-note line shows the original
+    sale's cost so the link is visible.
+    """
+
+    priced: dict[tuple[str, str], Flow] = {}
+    for row in list(sales) + list(tars):
+        if row.unit_cost is None or not _positive(row.units) or not row.billno:
+            continue
+        priced.setdefault((row.site, row.billno), row)
+
+    def stamp(rows: list[Flow]) -> list[Flow]:
+        out: list[Flow] = []
+        for row in rows:
+            source = priced.get((row.site, row.ref_billno or ""))
+            if source is None or row.units >= -QTY_EPS:
+                out.append(row)
+                continue
+            out.append(
+                replace(row, unit_cost=source.unit_cost, cost_billno=source.cost_billno)
+            )
+        return out
+
+    return stamp(sales), stamp(tars)
 
 
 def stock_effect(kind: str, units: float, *, inbound: bool = False) -> float:
@@ -471,6 +504,7 @@ def build_vat_product(
         adjustments,
         outbound,
     )
+    sales, tars = attach_return_costs(sales, tars)
     tf_out_costed = _sum_units(outbound)
     tf_qty = tf_in_qty - tf_out_costed
     qty = qty_if_all + (tf_out_qty - tf_out_costed)
@@ -525,6 +559,7 @@ def build_vat_product(
                 sale_price=row.sale_price,
                 cost_billno=row.cost_billno,
                 supplier=row.supplier,
+                ref_billno=row.ref_billno,
             )
         )
 

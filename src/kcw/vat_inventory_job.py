@@ -294,6 +294,7 @@ def _add_generated(
                 site=site,
                 unit_cost=cost or None,
                 sale_price=sale_price,
+                ref_billno=_text(getattr(row, "ref_new_billno", "")) or None,
             )
         )
 
@@ -314,22 +315,22 @@ def _generated_frames() -> dict[str, pd.DataFrame]:
         """,
         "tar": """
             select billdate, new_billno, bcode, qty, mtp, price, amount,
-                   null::float8 as last_cost
+                   null::float8 as last_cost, null::text as ref_new_billno
             from billgen.fin_tar_lines
         """,
         "3tar": """
             select billdate, new_billno, bcode, qty, mtp, price, amount,
-                   null::float8 as last_cost
+                   null::float8 as last_cost, null::text as ref_new_billno
             from billgen.fin_3tar_lines
         """,
         "cntar": """
             select billdate, new_billno, bcode, qty, mtp, price, amount,
-                   null::float8 as last_cost
+                   null::float8 as last_cost, ref_new_billno
             from billgen.fin_cntar_lines
         """,
         "3cntar": """
             select billdate, new_billno, bcode, qty, mtp, price, amount,
-                   null::float8 as last_cost
+                   null::float8 as last_cost, ref_new_billno
             from billgen.fin_3cntar_lines
         """,
     }
@@ -382,7 +383,7 @@ def _write(products: list[VatProduct], rebuilt_at: datetime, *, year: int) -> No
     layer_buf.write("bcode,source,billno,billdate,supplier,site,year,qty,unit_cost\n")
     move_buf = StringIO()
     move_buf.write(
-        "bcode,billdate,billno,kind,site,year,qty,unit_cost,balance,supplier,sale_price,cost_billno\n"
+        "bcode,billdate,billno,kind,site,year,qty,unit_cost,balance,supplier,sale_price,cost_billno,ref_billno\n"
     )
     stamp = rebuilt_at.isoformat()
     for product in products:
@@ -442,6 +443,7 @@ def _write(products: list[VatProduct], rebuilt_at: datetime, *, year: int) -> No
                         _csv(move.supplier or ""),
                         _num_csv(move.sale_price),
                         _csv(move.cost_billno or ""),
+                        _csv(move.ref_billno or ""),
                     ]
                 )
                 + "\n"
@@ -461,6 +463,10 @@ def _write(products: list[VatProduct], rebuilt_at: datetime, *, year: int) -> No
             cur.execute(
                 "alter table fifo.vat_movement "
                 "add column if not exists cost_billno text"
+            )
+            cur.execute(
+                "alter table fifo.vat_movement "
+                "add column if not exists ref_billno text"
             )
             cur.execute("delete from fifo.vat_movement where year = %s", (year,))
             cur.execute("delete from fifo.vat_layer where year = %s", (year,))
@@ -490,7 +496,7 @@ def _write(products: list[VatProduct], rebuilt_at: datetime, *, year: int) -> No
                 """
                 COPY fifo.vat_movement (
                     bcode, billdate, billno, kind, site, year, qty, unit_cost, balance, supplier,
-                    sale_price, cost_billno
+                    sale_price, cost_billno, ref_billno
                 ) FROM STDIN WITH (FORMAT CSV, HEADER TRUE)
                 """,
             )
