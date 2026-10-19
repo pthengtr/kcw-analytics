@@ -315,6 +315,63 @@ def attach_return_costs(
     return stamp(sales), stamp(tars)
 
 
+def is_credit_note_bill(billno: str | None) -> bool:
+    bill = (billno or "").strip().upper()
+    return bill.startswith(("3CNTAR", "CNTAR", "3CNTAD", "CNTAD", "3CN", "CN"))
+
+
+def attribute_return_sources(
+    sales: list[Flow], tars: list[Flow]
+) -> tuple[list[Flow], list[Flow]]:
+    """Name the credit notes on a later sale that had no purchase left.
+
+    Returned units are sold again with no new receipt. The oldest uncosted
+    sale takes the oldest credit note.
+    """
+
+    returns: list[dict] = []
+    for row in list(sales) + list(tars):
+        if row.units >= -QTY_EPS or not is_credit_note_bill(row.billno):
+            continue
+        returns.append(
+            {"billno": row.billno, "billdate": row.billdate, "left": abs(float(row.units))}
+        )
+    returns.sort(key=lambda row: (row["billdate"], row["billno"]))
+
+    slots = [("sales", index, row) for index, row in enumerate(sales)] + [
+        ("tars", index, row) for index, row in enumerate(tars)
+    ]
+    slots.sort(key=lambda item: (item[2].billdate, item[2].billno, item[2].site))
+    sales_out = list(sales)
+    tars_out = list(tars)
+    cursor = 0
+    for group, index, row in slots:
+        if row.unit_cost is not None or not _positive(row.units):
+            continue
+        need = float(row.units)
+        bills: list[str] = []
+        while need > QTY_EPS and cursor < len(returns):
+            src = returns[cursor]
+            if src["left"] <= QTY_EPS:
+                cursor += 1
+                continue
+            take = min(need, src["left"])
+            if src["billno"] not in bills:
+                bills.append(src["billno"])
+            need -= take
+            src["left"] -= take
+            if src["left"] <= QTY_EPS:
+                cursor += 1
+        if not bills:
+            continue
+        stamped = replace(row, ref_billno=", ".join(bills))
+        if group == "sales":
+            sales_out[index] = stamped
+        else:
+            tars_out[index] = stamped
+    return sales_out, tars_out
+
+
 def stock_effect(kind: str, units: float, *, inbound: bool = False) -> float:
     """Signed change in VAT qty. Inflows add the source qty; issues subtract it."""
 
@@ -505,6 +562,7 @@ def build_vat_product(
         outbound,
     )
     sales, tars = attach_return_costs(sales, tars)
+    sales, tars = attribute_return_sources(sales, tars)
     tf_out_costed = _sum_units(outbound)
     tf_qty = tf_in_qty - tf_out_costed
     qty = qty_if_all + (tf_out_qty - tf_out_costed)
