@@ -390,3 +390,41 @@ def test_syp_opening_takes_the_oldest_vat_layers():
     assert by_site["hq"].open_qty == 4
     assert by_site["hq"].layers[0].billno == "NEW"
     assert by_site["hq"].layers[0].unit_cost == 9
+
+
+def test_credit_note_shows_the_sale_it_reverses():
+    product = build_vat_product(
+        bcode="A",
+        descr="oil",
+        actual_qty=4,
+        pre_receipts=[],
+        ytd_purchase_units=0,
+        ytd_issue_units=0,
+        purchases=[_flow(KIND_PI, 5, "PI1", day=2, cost=8)],
+        sales=[],
+        rvs=[],
+        tars=[
+            _flow(KIND_TAR, 1, "TAR1", day=10),
+            Flow(
+                billdate=date(2026, 3, 12),
+                billno="CNTAR1",
+                units=-1,
+                kind=KIND_TAR,
+                ref_billno="TAR1",
+            ),
+            _flow(KIND_TAR, 1, "TAR2", day=20),
+        ],
+        adjustments=[],
+        opening_layers=[],
+    )
+    assert product is not None
+    assert product.qty == 4
+    by_bill = {row.billno: row for row in product.movements}
+    assert by_bill["TAR1"].unit_cost == 8
+    assert by_bill["TAR1"].cost_billno == "PI1"
+    note = by_bill["CNTAR1"]
+    assert note.qty == 1
+    assert note.ref_billno == "TAR1"
+    assert note.unit_cost == 8
+    assert note.cost_billno == "PI1"
+    assert by_bill["TAR2"].unit_cost is None
