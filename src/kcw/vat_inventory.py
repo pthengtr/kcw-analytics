@@ -11,11 +11,13 @@ VAT stock uses that identity on a filtered set:
 - a transfer is an issue at the sending branch and a receipt at the other
 - only the portion backward FIFO can cost from VAT layers moves between books
 
-Opening VAT qty is today's company on-hand walked back to 1 Jan, then peeled
-onto pre-2026 supplier receipts, newest first. Only the slices that land on
-ISVAT=Y receipts enter the VAT book. The oldest of those slices, up to the
-quantity sitting on SYP's pre-2026 transfers, open the SYP book. The rest open
-HQ. Remaining qty is peeled onto each branch's VAT receipt pool for cost.
+Opening VAT qty walks today's VAT on-hand back through the VAT pile only.
+Today's VAT on-hand is the part of QTYOH2 that sits on ISVAT=Y supplier bills,
+newest first. RV is not a supplier bill, so it is not part of that on-hand.
+A non-VAT receipt stays in the non-VAT pile. A transfer moves only the units
+it takes from a VAT supplier bill: those units leave the sender and arrive at
+the receiver. The oldest Jan 1 slices, up to the quantity sitting on SYP's
+pre-2026 transfers, open the SYP book. The rest open HQ.
 
 Each 2026 movement keeps that bill's net purchase cost and, for a sale or TAR,
 its net selling price. Both are per smallest unit and exclude VAT. A sale's
@@ -135,6 +137,8 @@ class SiteBook:
     tars: list[Flow] = field(default_factory=list)
     adjustments: list[Flow] = field(default_factory=list)
     transfer_out: list[Flow] = field(default_factory=list)
+    supplier_ytd: list[Receipt] = field(default_factory=list)
+    other_out: list[Flow] = field(default_factory=list)
 
 
 def is_service_bcode(bcode: str | None) -> bool:
@@ -204,9 +208,9 @@ def trace_sale_costs(
     """Assign leftover VAT receipts to issues after the newest receipts cover on-hand.
 
     Same backward FIFO as the company cost book: newest layers stay in stock,
-    older layers are consumed by issues from oldest to newest. A sale or transfer
-    keeps the purchase bill numbers it consumed. A transfer keeps only the qty
-    those VAT layers could cover.
+    older layers are consumed by issues from oldest to newest. A sale keeps the
+    purchase bill numbers it consumed. A transfer that already carries the VAT
+    supplier bill it took is kept as it is. RV is not one of those bills.
     """
 
     layers = [
@@ -245,6 +249,9 @@ def trace_sale_costs(
     transfers_out: list[Flow] = []
     for group, index, row in slots:
         if row.kind not in (KIND_SALE, KIND_TAR, KIND_SA, KIND_TF) or not _positive(row.units):
+            continue
+        if group == "transfers" and row.unit_cost is not None:
+            transfers_out.append(row)
             continue
         need = float(row.units)
         allocs: list[tuple[str, float, float]] = []
@@ -471,24 +478,289 @@ def transfer_cover(on_hand: float, receipts: list[Receipt], *, year_start: date 
     return covered
 
 
-def split_opening_layers(layers: list[Layer], syp_qty: float) -> tuple[list[Layer], list[Layer]]:
-    """Give SYP the oldest opening VAT layers, up to the qty its old transfers hold."""
+def vat_pile_opening(vat_on_hand: float, vat_receipts: float, vat_issues: float) -> float:
+    """Walk today's VAT on-hand back through the VAT pile.
 
-    left = max(float(syp_qty or 0.0), 0.0)
-    ordered = sorted(layers, key=lambda row: (row.billdate, row.billno))
-    syp: list[Layer] = []
-    hq: list[Layer] = []
+    ``vat_receipts`` is this year's ISVAT=Y supplier receipts plus VAT transfers
+    in. ``vat_issues`` is the VAT units that left on issues and VAT transfers
+    out. RV is in neither number. A non-VAT receipt is not a VAT receipt.
+    """
+
+    return float(vat_on_hand) - float(vat_receipts) + float(vat_issues)
+
+
+@dataclass
+class _Slice:
+    billno: str
+    billdate: date
+    left: float
+    unit_cost: float
+    is_vat: bool
+    supplier: str | None
+    site: str
+    line_id: int
+
+
+def _cover_slices(on_hand: float, receipts: list[Receipt]) -> list[_Slice]:
+    """Newest supplier receipts still on the shelf, VAT and non-VAT."""
+
+    left = max(float(on_hand or 0.0), 0.0)
+    ordered = sorted(
+        (row for row in receipts if _positive(row.units)),
+        key=lambda row: (row.billdate, row.site, row.line_id),
+        reverse=True,
+    )
+    slices: list[_Slice] = []
     for row in ordered:
-        if not _positive(row.qty) or left <= QTY_EPS:
-            hq.append(replace(row, site="hq"))
-            continue
-        take = min(row.qty, left)
+        if left <= QTY_EPS:
+            break
+        take = min(row.units, left)
         left -= take
-        syp.append(replace(row, qty=take, site="syp"))
-        rest = row.qty - take
-        if rest > QTY_EPS:
-            hq.append(replace(row, qty=rest, site="hq"))
-    return syp, hq
+        slices.append(
+            _Slice(
+                billno=row.billno,
+                billdate=row.billdate,
+                left=take,
+                unit_cost=row.unit_cost,
+                is_vat=row.is_vat,
+                supplier=row.supplier,
+                site=row.site,
+                line_id=row.line_id,
+            )
+        )
+    return slices
+
+
+def _ytd_supplier_receipts(book: SiteBook) -> list[Receipt]:
+    """Supplier bills since 1 Jan. ``supplier_ytd`` wins when the job stored it."""
+
+    rows = [row for row in book.supplier_ytd if _positive(row.units)]
+    for index, flow in enumerate(book.purchases):
+        if not _positive(flow.units):
+            continue
+        if any(
+            row.is_vat
+            and row.billno == flow.billno
+            and row.billdate == flow.billdate
+            and abs(row.units - flow.units) <= QTY_EPS
+            for row in rows
+        ):
+            continue
+        rows.append(
+            Receipt(
+                line_id=index,
+                billno=flow.billno,
+                billdate=flow.billdate,
+                units=flow.units,
+                unit_cost=flow.unit_cost or 0.0,
+                is_vat=True,
+                supplier=flow.supplier,
+                site=flow.site or "hq",
+            )
+        )
+    return rows
+
+
+def _vat_opening_layers(slices: list[_Slice], site: str) -> list[Layer]:
+    rows = [
+        Layer(
+            billno=sl.billno,
+            billdate=sl.billdate,
+            source=KIND_PI,
+            qty=sl.left,
+            unit_cost=sl.unit_cost,
+            supplier=sl.supplier,
+            site=site,
+        )
+        for sl in slices
+        if sl.site == site and sl.is_vat and _positive(sl.left)
+    ]
+    rows.sort(key=lambda row: (row.billdate, row.billno))
+    return rows
+
+
+def _assign_opening_sites(slices: list[_Slice], syp_qty: float) -> list[_Slice]:
+    """Give SYP the oldest Jan 1 slices, up to the qty its old transfers hold."""
+
+    ordered = sorted(slices, key=lambda row: (row.billdate, row.billno, row.line_id))
+    left = max(float(syp_qty or 0.0), 0.0)
+    placed: list[_Slice] = []
+    for sl in ordered:
+        if left <= QTY_EPS:
+            sl.site = "hq"
+            placed.append(sl)
+            continue
+        if sl.left <= left + QTY_EPS:
+            sl.site = "syp"
+            left -= sl.left
+            placed.append(sl)
+            continue
+        placed.append(
+            _Slice(
+                billno=sl.billno,
+                billdate=sl.billdate,
+                left=left,
+                unit_cost=sl.unit_cost,
+                is_vat=sl.is_vat,
+                supplier=sl.supplier,
+                site="syp",
+                line_id=sl.line_id,
+            )
+        )
+        sl.left -= left
+        sl.site = "hq"
+        placed.append(sl)
+        left = 0.0
+    return placed
+
+
+def _oldest_at(slices: list[_Slice], site: str) -> list[_Slice]:
+    return sorted(
+        (sl for sl in slices if sl.site == site and _positive(sl.left)),
+        key=lambda row: (row.billdate, row.billno, row.line_id),
+    )
+
+
+def _consume_issue(slices: list[_Slice], site: str, units: float) -> float:
+    """Remove oldest units at ``site``. Return how many came off a VAT bill."""
+
+    need = max(float(units or 0.0), 0.0)
+    vat = 0.0
+    for sl in _oldest_at(slices, site):
+        if need <= QTY_EPS:
+            break
+        take = min(sl.left, need)
+        sl.left -= take
+        need -= take
+        if sl.is_vat:
+            vat += take
+    return vat
+
+
+def _move_oldest(slices: list[_Slice], source: str, dest: str, units: float) -> list[tuple[_Slice, float]]:
+    """Move oldest units to the other branch. Return the VAT slices that moved."""
+
+    need = max(float(units or 0.0), 0.0)
+    moved: list[tuple[_Slice, float]] = []
+    for sl in _oldest_at(slices, source):
+        if need <= QTY_EPS:
+            break
+        take = min(sl.left, need)
+        need -= take
+        if take >= sl.left - QTY_EPS:
+            sl.site = dest
+            if sl.is_vat:
+                moved.append((sl, take))
+            continue
+        part = _Slice(
+            billno=sl.billno,
+            billdate=sl.billdate,
+            left=take,
+            unit_cost=sl.unit_cost,
+            is_vat=sl.is_vat,
+            supplier=sl.supplier,
+            site=dest,
+            line_id=sl.line_id,
+        )
+        sl.left -= take
+        slices.append(part)
+        if part.is_vat:
+            moved.append((part, take))
+    return moved
+
+
+def _stamped_transfer(flow: Flow, moved: list[tuple[_Slice, float]], site: str) -> Flow | None:
+    vat_qty = sum(qty for _sl, qty in moved)
+    if not _positive(vat_qty):
+        return None
+    extended = sum(qty * sl.unit_cost for sl, qty in moved)
+    bills: list[str] = []
+    for sl, _qty in moved:
+        if sl.billno and sl.billno not in bills:
+            bills.append(sl.billno)
+    return replace(
+        flow,
+        units=vat_qty,
+        site=site,
+        unit_cost=extended / vat_qty,
+        cost_billno=", ".join(bills) or None,
+    )
+
+
+def trace_vat_piles(
+    hq: SiteBook,
+    syp: SiteBook,
+    *,
+    year_start: date = YEAR_START,
+) -> tuple[list[Layer], list[Layer], list[Flow], list[Flow]]:
+    """VAT opening and the VAT portion of each transfer.
+
+    Today's VAT on-hand is whatever of the shelf still sits on an ISVAT=Y
+    supplier bill. Opening walks that quantity back through VAT receipts and
+    the VAT units that left. A transfer keeps only the units taken from a VAT
+    supplier bill.
+    """
+
+    hq_jan1 = float(hq.actual) - float(hq.ytd_pi) + float(hq.ytd_si)
+    syp_jan1 = float(syp.actual) - float(syp.ytd_pi) + float(syp.ytd_si)
+    pre = [
+        row
+        for row in list(hq.pre_supplier) + list(syp.pre_supplier)
+        if row.billdate < year_start and _positive(row.units)
+    ]
+    slices = _assign_opening_sites(
+        _cover_slices(hq_jan1 + syp_jan1, pre),
+        transfer_cover(syp_jan1, syp.pre_transfer, year_start=year_start),
+    )
+    hq_open = _vat_opening_layers(slices, "hq")
+    syp_open = _vat_opening_layers(slices, "syp")
+
+    events: list[tuple] = []
+    for site, book in (("hq", hq), ("syp", syp)):
+        for row in _ytd_supplier_receipts(book):
+            if row.billdate < year_start:
+                continue
+            events.append((row.billdate, 1, row.billno, "in", site, row))
+        for flow in list(book.sales) + list(book.adjustments) + list(book.other_out):
+            if flow.billdate < year_start or not _positive(flow.units):
+                continue
+            events.append((flow.billdate, 2, flow.billno, "out", site, flow))
+        for flow in book.transfer_out:
+            if flow.billdate < year_start or not _positive(flow.units):
+                continue
+            events.append((flow.billdate, 3, flow.billno, "tf", site, flow))
+    events.sort(key=lambda item: (item[0], item[1], item[2], item[3], item[4]))
+
+    hq_tf: list[Flow] = []
+    syp_tf: list[Flow] = []
+    for _day, _rank, _bill, kind, site, row in events:
+        if kind == "in":
+            slices.append(
+                _Slice(
+                    billno=row.billno,
+                    billdate=row.billdate,
+                    left=row.units,
+                    unit_cost=row.unit_cost,
+                    is_vat=row.is_vat,
+                    supplier=row.supplier,
+                    site=site,
+                    line_id=row.line_id,
+                )
+            )
+            continue
+        if kind == "out":
+            _consume_issue(slices, site, row.units)
+            continue
+        dest = "syp" if site == "hq" else "hq"
+        moved = _move_oldest(slices, site, dest, row.units)
+        stamped = _stamped_transfer(row, moved, site)
+        if stamped is None:
+            continue
+        if site == "hq":
+            hq_tf.append(stamped)
+        else:
+            syp_tf.append(stamped)
+    return hq_open, syp_open, hq_tf, syp_tf
 
 
 def _receipt_layers(rows: list[Flow], source: str) -> list[Layer]:
@@ -641,35 +913,6 @@ def build_vat_product(
     )
 
 
-def _inbound_from_outbound(product: VatProduct | None, site: str) -> list[Flow]:
-    if product is None:
-        return []
-    rows: list[Flow] = []
-    for row in product.movements:
-        if row.kind != KIND_TF or row.qty >= -QTY_EPS:
-            continue
-        rows.append(
-            Flow(
-                billdate=row.billdate,
-                billno=row.billno,
-                units=abs(row.qty),
-                kind=KIND_TF,
-                site=site,
-                unit_cost=row.unit_cost,
-                cost_billno=row.cost_billno,
-                inbound=True,
-            )
-        )
-    return rows
-
-
-def _same_transfers(left: list[Flow], right: list[Flow]) -> bool:
-    def key(row: Flow) -> tuple:
-        return (row.billno, row.billdate, round(row.units, 4), round(row.unit_cost or 0.0, 4))
-
-    return sorted(map(key, left)) == sorted(map(key, right))
-
-
 def build_hq_and_syp(
     *,
     bcode: str,
@@ -683,25 +926,15 @@ def build_hq_and_syp(
     if is_service_bcode(bcode):
         return []
 
-    company_1_jan = (
-        float(hq.actual)
-        + float(syp.actual)
-        - float(hq.ytd_pi)
-        - float(syp.ytd_pi)
-        + float(hq.ytd_si)
-        + float(syp.ytd_si)
-    )
-    company_layers, _uncovered = peel_opening(
-        company_1_jan,
-        list(hq.pre_supplier) + list(syp.pre_supplier),
-        year_start=year_start,
-    )
-    syp_1_jan = float(syp.actual) - float(syp.ytd_pi) + float(syp.ytd_si)
-    syp_open, hq_open = split_opening_layers(
-        company_layers, transfer_cover(syp_1_jan, syp.pre_transfer, year_start=year_start)
-    )
+    hq_open, syp_open, hq_tf, syp_tf = trace_vat_piles(hq, syp, year_start=year_start)
 
-    def build_site(book: SiteBook, site: str, opening: list[Layer], inbound: list[Flow]) -> VatProduct | None:
+    def build_site(
+        book: SiteBook,
+        site: str,
+        opening: list[Layer],
+        inbound: list[Flow],
+        outbound: list[Flow],
+    ) -> VatProduct | None:
         return build_vat_product(
             bcode=bcode,
             descr=descr,
@@ -714,25 +947,17 @@ def build_hq_and_syp(
             rvs=book.rvs,
             tars=book.tars,
             adjustments=book.adjustments,
-            transfers_out=book.transfer_out,
+            transfers_out=outbound,
             transfers_in=inbound,
             opening_layers=opening,
             site=site,
             year_start=year_start,
         )
 
-    hq_inbound: list[Flow] = []
-    hq_product: VatProduct | None = None
-    syp_product: VatProduct | None = None
-    for _pass in range(2):
-        hq_product = build_site(hq, "hq", hq_open, hq_inbound)
-        syp_inbound = _inbound_from_outbound(hq_product, "syp")
-        syp_product = build_site(syp, "syp", syp_open, syp_inbound)
-        returned = _inbound_from_outbound(syp_product, "hq")
-        if _same_transfers(returned, hq_inbound):
-            break
-        hq_inbound = returned
-
+    hq_inbound = [replace(row, inbound=True, site="hq") for row in syp_tf]
+    syp_inbound = [replace(row, inbound=True, site="syp") for row in hq_tf]
+    hq_product = build_site(hq, "hq", hq_open, hq_inbound, hq_tf)
+    syp_product = build_site(syp, "syp", syp_open, syp_inbound, syp_tf)
     return [row for row in (hq_product, syp_product) if row is not None]
 
 
