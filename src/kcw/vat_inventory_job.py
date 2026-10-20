@@ -178,6 +178,19 @@ def _add_pidet(
             continue
         if billdate >= year_start:
             side.ytd_pi += units
+            if units > 1e-9:
+                side.supplier_ytd.append(
+                    Receipt(
+                        line_id=int(_num(row.line_id)),
+                        billno=billno,
+                        billdate=billdate,
+                        units=units,
+                        unit_cost=cost or 0.0,
+                        is_vat=is_vat,
+                        supplier=_text(row.supplier) or None,
+                        site=site,
+                    )
+                )
             if is_vat:
                 side.purchases.append(
                     Flow(
@@ -251,6 +264,10 @@ def _add_sidet(
         elif kind == KIND_SA:
             side.adjustments.append(
                 Flow(billdate=billdate, billno=_text(row.billno), units=units, kind=KIND_SA, site=site)
+            )
+        elif units > 1e-9:
+            side.other_out.append(
+                Flow(billdate=billdate, billno=billno, units=units, kind="OUT", site=site)
             )
 
 

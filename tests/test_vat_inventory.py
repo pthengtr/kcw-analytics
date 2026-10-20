@@ -15,6 +15,7 @@ from src.kcw.vat_inventory import (
     document_kind,
     peel_opening,
     sale_unit_price,
+    vat_pile_opening,
 )
 
 
@@ -365,6 +366,84 @@ def test_closed_year_stays_frozen_and_the_next_year_is_created():
     assert should_rebuild_year(2026, 2027, True) is False
     assert should_rebuild_year(2027, 2027, False) is True
     assert should_rebuild_year(2028, 2027, False) is False
+
+
+def test_opening_walks_todays_vat_on_hand_back_through_the_vat_pile():
+    assert vat_pile_opening(vat_on_hand=60, vat_receipts=0, vat_issues=0) == 60
+    assert vat_pile_opening(vat_on_hand=10, vat_receipts=20, vat_issues=70) == 60
+    products = build_hq_and_syp(
+        bcode="N",
+        descr="mixed",
+        hq=SiteBook(
+            actual=130,
+            ytd_pi=30,
+            pre_supplier=[
+                _receipt(date(2025, 1, 1), 60, True, "V", 1, cost=4),
+                _receipt(date(2025, 6, 1), 40, False, "N", 2, cost=1),
+            ],
+            supplier_ytd=[_receipt(date(2026, 2, 1), 30, False, "N2", 3, cost=2)],
+        ),
+        syp=SiteBook(),
+    )
+    by_site = {row.site: row for row in products}
+    assert by_site["hq"].open_qty == 60
+    assert by_site["hq"].purchase_qty == 0
+    assert by_site["hq"].qty == 60
+    assert "syp" not in by_site
+
+
+def test_transfer_of_older_non_vat_stays_out_of_the_vat_book():
+    products = build_hq_and_syp(
+        bcode="M",
+        descr="old non vat",
+        hq=SiteBook(
+            actual=10,
+            ytd_si=10,
+            pre_supplier=[
+                _receipt(date(2025, 1, 1), 10, False, "N", 1, cost=1),
+                _receipt(date(2025, 6, 1), 10, True, "V", 2, cost=7),
+            ],
+            transfer_out=[_flow(KIND_TF, 10, "TFV6901-009")],
+        ),
+        syp=SiteBook(actual=10, ytd_pi=10),
+    )
+    by_site = {row.site: row for row in products}
+    hq = by_site["hq"]
+    assert hq.open_qty == 10
+    assert hq.tf_qty == 0
+    assert hq.qty == 10
+    assert hq.layers[0].billno == "V"
+    assert "syp" not in by_site
+
+
+def test_transfer_keeps_units_taken_from_a_vat_supplier_bill():
+    products = build_hq_and_syp(
+        bcode="M2",
+        descr="old vat",
+        hq=SiteBook(
+            actual=10,
+            ytd_si=10,
+            pre_supplier=[
+                _receipt(date(2025, 1, 1), 10, True, "V", 1, cost=4),
+                _receipt(date(2025, 6, 1), 10, False, "N", 2, cost=1),
+            ],
+            transfer_out=[_flow(KIND_TF, 10, "TFV6903-001")],
+        ),
+        syp=SiteBook(actual=10, ytd_pi=10),
+    )
+    by_site = {row.site: row for row in products}
+    hq = by_site["hq"]
+    syp = by_site["syp"]
+    assert hq.open_qty == 10
+    assert hq.tf_qty == -10
+    assert hq.qty == 0
+    assert syp.open_qty == 0
+    assert syp.tf_qty == 10
+    assert syp.qty == 10
+    transfer = next(row for row in syp.movements if row.kind == KIND_TF)
+    assert transfer.unit_cost == 4
+    assert transfer.cost_billno == "V"
+    assert transfer.qty == 10
 
 
 def test_syp_opening_takes_the_oldest_vat_layers():
