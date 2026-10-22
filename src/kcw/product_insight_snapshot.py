@@ -901,24 +901,38 @@ def enrich_snapshot(
         conn.close()
 
 
-def _incremental_since(conn: sqlite3.Connection, meta: dict[str, str], lookback_days: int = 1) -> str:
-    """Date to re-pull from: max SI/PI billdate minus lookback, else facts_as_of/cutoff."""
+def _incremental_since(
+    conn: sqlite3.Connection,
+    meta: dict[str, str],
+    lookback_days: int = 1,
+    today: date | None = None,
+) -> str:
+    """Date to re-pull from: latest SI/PI bill on or before today, minus lookback.
+
+    Future-dated lines (open POs stamped ahead of today) must not move the
+    window past real sales, or the next refresh skips them.
+    """
+    today = today or date.today()
+    today_s = today.isoformat()
     row = conn.execute(
         """
         SELECT MAX(d) FROM (
-          SELECT MAX(billdate) AS d FROM sidet
+          SELECT MAX(billdate) AS d FROM sidet WHERE billdate <= ?
           UNION ALL
-          SELECT MAX(billdate) AS d FROM pidet
+          SELECT MAX(billdate) AS d FROM pidet WHERE billdate <= ?
         )
-        """
+        """,
+        (today_s, today_s),
     ).fetchone()
     raw = (row[0] if row else None) or meta.get("facts_as_of") or meta.get("cutoff")
     if not raw:
-        return (date.today() - timedelta(days=7)).isoformat()
+        return (today - timedelta(days=7)).isoformat()
     try:
         base = date.fromisoformat(str(raw)[:10])
     except ValueError:
-        base = date.today() - timedelta(days=7)
+        base = today - timedelta(days=7)
+    if base > today:
+        base = today
     return (base - timedelta(days=max(0, int(lookback_days)))).isoformat()
 
 

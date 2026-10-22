@@ -51,12 +51,13 @@ def parse_window(window: str, *, as_of: date | None = None) -> date:
     raise ValueError(f"invalid window unit in {window!r}")
 
 
-def _prompt_path() -> Path:
-    return Path(__file__).resolve().parents[2] / "prompts" / "product_insight_v1.yaml"
+def _prompt_path(site: str = "hq") -> Path:
+    name = "product_insight_syp_v1.yaml" if (site or "").lower() == "syp" else "product_insight_v1.yaml"
+    return Path(__file__).resolve().parents[2] / "prompts" / name
 
 
-def load_prompt() -> dict[str, Any]:
-    path = _prompt_path()
+def load_prompt(site: str = "hq") -> dict[str, Any]:
+    path = _prompt_path(site)
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     if not isinstance(data, dict) or not data.get("system"):
         raise RuntimeError(f"invalid prompt file: {path}")
@@ -657,7 +658,15 @@ def build_fact_pack(snap: sqlite3.Connection, *, site: str, bcode: str, facts_as
                 "ACCTNAME": (hdr["acctname"] if hdr else None),
             }
         )
-    recent = _recent_sales_rollup(si_all, as_of=facts_as_of)
+    demand_lines = si_all
+    demand_channels = {"hq_store", "online", "syp_store"}
+    if site == "syp":
+        demand_lines = [r for r in si_all if r.get("channel") == "syp_store"]
+        demand_channels = {"syp_store"}
+        si_c = [r for r in si_c if r.get("channel") == "syp_store"]
+    recent = _recent_sales_rollup(
+        demand_lines, as_of=facts_as_of, customer_channels=demand_channels
+    )
 
     pi_c = []
     for r in pi_rows:
@@ -679,23 +688,27 @@ def build_fact_pack(snap: sqlite3.Connection, *, site: str, bcode: str, facts_as
         )
     # Full PI history for supplier rollups / margin (before soft-cap).
     pi_all = list(pi_c)
-    purchase_summary = _purchase_summary(pi_all, as_of=facts_as_of, days=365, top_n=3)
+    pi_for_branch = pi_all
+    if site == "syp":
+        pi_for_branch = [r for r in pi_all if str(r.get("SRC_SITE") or "").lower() == "syp"]
+        pi_c = list(pi_for_branch)
+    purchase_summary = _purchase_summary(pi_for_branch, as_of=facts_as_of, days=365, top_n=3)
     customer_summary = _customer_summary(
-        si_all,
+        demand_lines,
         as_of=facts_as_of,
         days=365,
         top_n=3,
-        customer_channels={"hq_store", "online", "syp_store"},
+        customer_channels=demand_channels,
     )
     if len(pi_c) > MAX_LINES_PER_KIND:
         pi_c = pi_c[-MAX_LINES_PER_KIND:]
 
     stock = _stock_block(snap, bcode, master)
     margin = _margin_block(
-        si_all,
-        pi_all,
+        demand_lines,
+        pi_for_branch,
         as_of=facts_as_of,
-        customer_channels={"hq_store", "online", "syp_store"},
+        customer_channels=demand_channels,
     )
 
     facts = {
@@ -723,7 +736,9 @@ def build_fact_pack(snap: sqlite3.Connection, *, site: str, bcode: str, facts_as
         "customer_summary": customer_summary,
         "margin": margin,
     }
-    facts["derived"] = build_derived(facts)
+    facts["derived"] = build_derived(
+        facts, policy_branch="syp" if site == "syp" else None
+    )
     return facts
 
 
@@ -907,6 +922,19 @@ def generate_one(
         data_through=data_through,
     )
     _mark_queue_done(site=site, bcode=bcode, snap_id=snap_id, window=window)
+    if site == "syp":
+        try:
+            from src.kcw.product_insight_qtymin import note_insight_for_review
+
+            note_insight_for_review(
+                site="syp",
+                bcode=bcode,
+                snap_id=snap_id,
+                insight_generated_at=generated_at,
+                facts=facts,
+            )
+        except Exception as exc:
+            print(f"worker: qtymin note failed {bcode}: {exc}", flush=True)
     return {
         "bcode": bcode,
         "elapsed_s": round(elapsed, 2),

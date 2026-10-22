@@ -187,7 +187,7 @@ def classify_order_status(
     return "caution"
 
 
-def build_derived(facts: dict[str, Any]) -> dict[str, Any]:
+def build_derived(facts: dict[str, Any], *, policy_branch: str | None = None) -> dict[str, Any]:
     """Assemble origin-traced numbers the prompt and SQLite columns share."""
     recent = facts.get("recent") or {}
     last_30 = recent.get("last_30d") or {}
@@ -283,8 +283,11 @@ def build_derived(facts: dict[str, Any]) -> dict[str, Any]:
         stock_anom = "none"
 
     dead = "yes" if qty_12 <= 0 and qty_90 <= 0 else ("maybe" if qty_12 <= 0 else "no")
+    # Company HQ insight treats QTYMIN<0 as a hard stop. A SYP branch insight
+    # still shows a holding number; the QTYMIN review decides -1 vs positive.
+    hard_stop = dead == "yes" or (policy_branch != "syp" and do_not_hq)
     # order_ok = restock *policy* for the insight lifetime (14–30d), not "PO today vs QTYOH".
-    if do_not_hq or dead == "yes":
+    if hard_stop:
         order_ok = "no"
     elif dead == "maybe" or trend_90 == "declining" or margin_flag in ("negative", "weak"):
         order_ok = "caution"
@@ -293,7 +296,7 @@ def build_derived(facts: dict[str, Any]) -> dict[str, Any]:
     else:
         order_ok = "caution"
 
-    if do_not_hq or dead == "yes":
+    if hard_stop:
         rec_qtymin = 0.0
         packed = pack_order(0.0, mtp2)
         xfer_qty = 0.0

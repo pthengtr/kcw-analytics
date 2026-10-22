@@ -169,6 +169,14 @@ def init_insights_schema(conn: sqlite3.Connection | None = None) -> None:
           last_snap_at TEXT,
           updated_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS idle_pref (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          kind TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS idle_sync (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          synced_at TEXT NOT NULL
+        );
         CREATE INDEX IF NOT EXISTS insight_queue_status_idx
           ON insight_queue (site, snap_id, window, status, movement_score DESC);
         """
@@ -198,6 +206,7 @@ def init_insights_schema(conn: sqlite3.Connection | None = None) -> None:
 
 
 INSIGHT_TABLE = "product_insight.product_insights"
+QTYMIN_REVIEW_TABLE = "product_insight.qtymin_reviews"
 
 
 def _pg_connect():
@@ -325,6 +334,182 @@ def upsert_insight(
             values,
         )
         conn.commit()
+
+
+def _ensure_qtymin_reviews(conn) -> None:
+    conn.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {QTYMIN_REVIEW_TABLE} (
+          site text NOT NULL,
+          bcode text NOT NULL,
+          current_qtymin double precision,
+          current_meaning text NOT NULL,
+          decision text NOT NULL,
+          suggested_qtymin double precision,
+          why text,
+          watch jsonb,
+          insight_generated_at text,
+          reviewed_at text NOT NULL,
+          source text NOT NULL,
+          PRIMARY KEY (site, bcode)
+        )
+        """
+    )
+
+
+def upsert_qtymin_review(
+    *,
+    site: str,
+    bcode: str,
+    current_qtymin: float | None,
+    current_meaning: str,
+    decision: str,
+    suggested_qtymin: float,
+    why: str | None,
+    watch: list[str] | None,
+    insight_generated_at: str | None,
+    reviewed_at: str,
+    source: str,
+    conn: Any = None,
+) -> None:
+    """Store one QTYMIN recommendation. Does not write PARTS9."""
+    from psycopg.types.json import Json
+
+    own = conn is None
+    if own:
+        conn = _pg_connect()
+    try:
+        _ensure_qtymin_reviews(conn)
+        conn.execute(
+            f"""
+            INSERT INTO {QTYMIN_REVIEW_TABLE} (
+              site, bcode, current_qtymin, current_meaning, decision,
+              suggested_qtymin, why, watch, insight_generated_at, reviewed_at, source
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ON CONFLICT (site, bcode) DO UPDATE SET
+              current_qtymin=excluded.current_qtymin,
+              current_meaning=excluded.current_meaning,
+              decision=excluded.decision,
+              suggested_qtymin=excluded.suggested_qtymin,
+              why=excluded.why,
+              watch=excluded.watch,
+              insight_generated_at=excluded.insight_generated_at,
+              reviewed_at=excluded.reviewed_at,
+              source=excluded.source
+            """,
+            (
+                site.lower(),
+                bcode.strip(),
+                current_qtymin,
+                current_meaning,
+                decision,
+                suggested_qtymin,
+                (why or "")[:500] or None,
+                Json(watch or []),
+                insight_generated_at,
+                reviewed_at,
+                source,
+            ),
+        )
+        if own:
+            conn.commit()
+    finally:
+        if own:
+            conn.close()
+
+
+def qtymin_review_marks(site: str) -> dict[str, dict[str, str | None]]:
+    """bcode -> decision and the insight timestamp the review sat on."""
+    with _pg_connect() as conn:
+        _ensure_qtymin_reviews(conn)
+        conn.commit()
+        rows = conn.execute(
+            f"""
+            SELECT bcode, decision, insight_generated_at
+            FROM {QTYMIN_REVIEW_TABLE}
+            WHERE site = %s
+            """,
+            (site.lower(),),
+        ).fetchall()
+    out: dict[str, dict[str, str | None]] = {}
+    for bcode, decision, insight_at in rows:
+        code = str(bcode or "").strip()
+        if not code:
+            continue
+        out[code] = {
+            "decision": str(decision) if decision else None,
+            "insight_generated_at": str(insight_at) if insight_at else None,
+        }
+    return out
+
+
+def insight_qtymin_slice(site: str, bcode: str) -> dict[str, Any] | None:
+    """One branch slice for a stored insight, or None."""
+    site_l = site.lower()
+    channel = "syp" if site_l == "syp" else "hq"
+    qtymin_col = "qtymin_syp" if site_l == "syp" else "qtymin_hq"
+    qtyoh_col = "qtyoh_syp" if site_l == "syp" else "qtyoh_hq"
+    with _pg_connect() as conn:
+        row = conn.execute(
+            f"""
+            SELECT bcode, generated_at, dead_stock, order_ok, margin_flag, rec_qtymin,
+                   {qtymin_col}, {qtyoh_col},
+                   insight_json #>> ARRAY['dashboard','channels_12m',%s]
+            FROM {INSIGHT_TABLE}
+            WHERE site = %s AND bcode = %s
+            """,
+            (channel, site_l, bcode.strip()),
+        ).fetchone()
+    if row is None:
+        return None
+    cols = (
+        "bcode",
+        "generated_at",
+        "dead_stock",
+        "order_ok",
+        "margin_flag",
+        "rec_qtymin",
+        "current_qtymin",
+        "qtyoh",
+        "branch_qty_12m",
+    )
+    return dict(zip(cols, row))
+
+
+def iter_insight_qtymin_slices(site: str):
+    """Yield branch slices from stored insights. No PARTS9 read."""
+    site_l = site.lower()
+    channel = "syp" if site_l == "syp" else "hq"
+    qtymin_col = "qtymin_syp" if site_l == "syp" else "qtymin_hq"
+    qtyoh_col = "qtyoh_syp" if site_l == "syp" else "qtyoh_hq"
+    with _pg_connect() as conn:
+        cur = conn.execute(
+            f"""
+            SELECT bcode, generated_at, dead_stock, order_ok, margin_flag, rec_qtymin,
+                   {qtymin_col}, {qtyoh_col},
+                   insight_json #>> ARRAY['dashboard','channels_12m',%s]
+            FROM {INSIGHT_TABLE}
+            WHERE site = %s
+            """,
+            (channel, site_l),
+        )
+        cols = (
+            "bcode",
+            "generated_at",
+            "dead_stock",
+            "order_ok",
+            "margin_flag",
+            "rec_qtymin",
+            "current_qtymin",
+            "qtyoh",
+            "branch_qty_12m",
+        )
+        while True:
+            batch = cur.fetchmany(500)
+            if not batch:
+                break
+            for raw in batch:
+                yield dict(zip(cols, raw))
 
 
 def get_insight(site: str, bcode: str) -> dict[str, Any] | None:
