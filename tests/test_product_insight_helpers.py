@@ -66,8 +66,11 @@ def test_snap_chunks_and_incremental_since():
         INSERT INTO pidet VALUES ('2026-09-12');
         """
     )
-    assert _incremental_since(conn, {}, lookback_days=1) == "2026-09-11"
-    assert _incremental_since(conn, {"facts_as_of": "2026-01-01"}, lookback_days=0) == "2026-09-12"
+    as_of = date(2026, 10, 21)
+    assert _incremental_since(conn, {}, lookback_days=1, today=as_of) == "2026-09-11"
+    assert _incremental_since(conn, {"facts_as_of": "2026-01-01"}, lookback_days=0, today=as_of) == "2026-09-12"
+    conn.execute("INSERT INTO pidet VALUES ('2026-11-01')")
+    assert _incremental_since(conn, {}, lookback_days=1, today=as_of) == "2026-09-11"
     conn.close()
 
 

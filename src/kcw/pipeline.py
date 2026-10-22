@@ -518,7 +518,12 @@ def cmd_insight_worker(args: argparse.Namespace) -> int:
         model=getattr(args, "model", None),
         delta=bool(getattr(args, "delta", False)),
         no_delta=bool(getattr(args, "no_delta", False)),
-        delta_every_hours=int(getattr(args, "delta_every_hours", 6)),
+        delta_every_hours=(
+            None
+            if getattr(args, "delta_every_hours", None) is None
+            else int(args.delta_every_hours)
+        ),
+        delta_refresh_hour=int(getattr(args, "delta_refresh_hour", 19)),
     )
 
 
@@ -973,10 +978,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Force the 14-day age refresh even if the saved worker state is delta",
     )
     iwork.add_argument(
+        "--delta-refresh-hour",
+        type=int,
+        default=19,
+        help="Daily snap refresh hour in Asia/Bangkok once the delta queue is empty (default 19)",
+    )
+    iwork.add_argument(
         "--delta-every-hours",
         type=int,
-        default=6,
-        help="Minimum hours between incremental snap refreshes once the delta queue is empty (default 6)",
+        default=None,
+        help="Override the daily refresh with a fixed hour interval after the queue drains",
     )
     iwork.set_defaults(func=cmd_insight_worker)
 

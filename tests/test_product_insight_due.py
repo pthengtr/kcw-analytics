@@ -1,8 +1,18 @@
 """Due-status for the Supabase backfill (no PARTS9 / Spark)."""
 
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
-from src.kcw.product_insight_worker import covered_bill_date, delta_reason, due_kind
+from src.kcw.product_insight_worker import (
+    _delta_refresh_hold,
+    covered_bill_date,
+    delta_reason,
+    delta_refresh_due,
+    due_kind,
+    next_delta_refresh_at,
+)
+
+BKK = ZoneInfo("Asia/Bangkok")
 
 
 def test_old_local_row_is_stale_on_a_new_snap():
@@ -104,6 +114,32 @@ def test_delta_reason_never_moved_and_quiet():
         )
         == "moved"
     )
+
+
+def test_daily_refresh_waits_until_19_bangkok():
+    now = datetime(2026, 10, 21, 13, 0, tzinfo=BKK)
+    last = "2026-10-21T03:30:20+07:00"
+    assert delta_refresh_due(now, last) is False
+    assert next_delta_refresh_at(now, last) == datetime(2026, 10, 21, 19, 0, tzinfo=BKK)
+    msg = _delta_refresh_hold(last, every_hours=None, refresh_hour=19, now=now)
+    assert msg == "worker: delta queue empty; next snap refresh at 2026-10-21 19:00 Asia/Bangkok"
+
+
+def test_daily_refresh_runs_at_19_when_the_morning_snap_is_older():
+    now = datetime(2026, 10, 21, 19, 5, tzinfo=BKK)
+    assert delta_refresh_due(now, "2026-10-21T08:10:00+07:00") is True
+
+
+def test_refresh_after_19_waits_until_the_next_evening():
+    now = datetime(2026, 10, 21, 21, 0, tzinfo=BKK)
+    last = "2026-10-21T19:10:00+07:00"
+    assert delta_refresh_due(now, last) is False
+    assert next_delta_refresh_at(now, last) == datetime(2026, 10, 22, 19, 0, tzinfo=BKK)
+
+
+def test_missing_last_snap_is_due_immediately():
+    now = datetime(2026, 10, 21, 8, 0, tzinfo=BKK)
+    assert delta_refresh_due(now, None) is True
 
 
 def test_fresh_supabase_row_is_not_due():

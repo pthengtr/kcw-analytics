@@ -3,7 +3,8 @@
 Default age mode: never analyzed, then age >= fresh_days, then optional soft refresh.
 Delta mode (--delta): incremental snap refresh, then a finite queue of never-analyzed,
 previous errors, and products whose snap bills are newer than the insight already stored.
-When that queue drains, the next refresh builds a shorter one.
+When that queue drains, the next refresh waits until 19:00 Asia/Bangkok so the
+day's bills are in before the next batch.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
+from zoneinfo import ZoneInfo
 
 from src.kcw.product_insight_generate import (
     SPARK_BASE,
@@ -42,7 +44,9 @@ BACKFILL_WINDOW = "5y"
 STEADY_WINDOW = "7d"
 DELTA_WINDOW = "delta"
 DEFAULT_FRESH_DAYS = 14
-DEFAULT_DELTA_EVERY_HOURS = 6
+DEFAULT_DELTA_EVERY_HOURS = 6  # only when --delta-every-hours is set
+DEFAULT_DELTA_REFRESH_HOUR = 19  # Asia/Bangkok, after the shop day
+BKK = ZoneInfo("Asia/Bangkok")
 DEFAULT_SOFT_MIN_DAYS = 7  # soft tier only when enable_soft_refresh
 DEFAULT_SNAP_EVERY_DAYS = 7
 DEFAULT_IDLE_SECONDS = 120
@@ -503,23 +507,28 @@ def _delta_rebuild_lock() -> Iterator[bool]:
         handle.close()
 
 
-def _snap_bill_index(snap_id: str) -> tuple[str, list[tuple[str, str, int]]]:
-    """Snap facts_as_of plus (bcode, max bill date, line count) for every SI/PI product."""
+def _snap_bill_index(
+    snap_id: str, *, src_site: str | None = None
+) -> tuple[str, list[tuple[str, str, int]]]:
+    """Snap facts_as_of plus (bcode, max bill date, line count) for SI/PI products."""
     snap = _open_snap(snap_id)
     try:
         meta = _snap_meta(snap)
         facts_as_of = meta.get("facts_as_of") or utc_now_iso()
+        where = " WHERE src_site=?" if src_site else ""
+        params = (src_site, src_site) if src_site else ()
         rows = snap.execute(
-            """
+            f"""
             SELECT bcode, MAX(max_date) AS max_date, SUM(n) AS n FROM (
               SELECT bcode, MAX(billdate) AS max_date, COUNT(*) AS n
-              FROM sidet GROUP BY bcode
+              FROM sidet{where} GROUP BY bcode
               UNION ALL
               SELECT bcode, MAX(billdate) AS max_date, COUNT(*) AS n
-              FROM pidet GROUP BY bcode
+              FROM pidet{where} GROUP BY bcode
             )
             GROUP BY bcode
-            """
+            """,
+            params,
         ).fetchall()
     finally:
         snap.close()
@@ -551,7 +560,9 @@ def sync_delta_queue(*, site: str, snap_id: str) -> dict[str, int]:
 
     Quiet products stay out. Call only when nothing on this window is running.
     """
-    facts_as_of, bills = _snap_bill_index(snap_id)
+    facts_as_of, bills = _snap_bill_index(
+        snap_id, src_site=site if site == "syp" else None
+    )
     marks = remote_insight_marks(site)
     now_iso = utc_now_iso()
     due: list[tuple[str, int, int]] = []
@@ -624,23 +635,40 @@ def sync_delta_queue(*, site: str, snap_id: str) -> dict[str, int]:
         conn.close()
 
 
-def claim_next_delta(*, site: str, snap_id: str) -> dict[str, Any] | None:
-    """Claim the next delta row. None if the queue is empty. {_contended: True} on a lost race."""
+def claim_next_delta(
+    *, site: str | None, snap_id: str, window: str = DELTA_WINDOW
+) -> dict[str, Any] | None:
+    """Claim the next row. None if the queue is empty. {_contended: True} on a lost race.
+
+    site=None claims across branches (the shared QTYMIN lane).
+    """
     now_iso = utc_now_iso()
     conn = connect_insights()
     try:
         init_insights_schema(conn)
         for _ in range(5):
-            row = conn.execute(
-                """
-                SELECT site, bcode, snap_id, facts_as_of, window, movement_score, due_tier
-                FROM insight_queue
-                WHERE site=? AND snap_id=? AND window=? AND status='pending'
-                ORDER BY COALESCE(due_tier, 1), movement_score DESC, bcode
-                LIMIT 1
-                """,
-                (site, snap_id, DELTA_WINDOW),
-            ).fetchone()
+            if site is None:
+                row = conn.execute(
+                    """
+                    SELECT site, bcode, snap_id, facts_as_of, window, movement_score, due_tier
+                    FROM insight_queue
+                    WHERE snap_id=? AND window=? AND status='pending'
+                    ORDER BY movement_score DESC, bcode
+                    LIMIT 1
+                    """,
+                    (snap_id, window),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    """
+                    SELECT site, bcode, snap_id, facts_as_of, window, movement_score, due_tier
+                    FROM insight_queue
+                    WHERE site=? AND snap_id=? AND window=? AND status='pending'
+                    ORDER BY COALESCE(due_tier, 1), movement_score DESC, bcode
+                    LIMIT 1
+                    """,
+                    (site, snap_id, window),
+                ).fetchone()
             if row is None:
                 return None
             cur = conn.execute(
@@ -650,7 +678,7 @@ def claim_next_delta(*, site: str, snap_id: str) -> dict[str, Any] | None:
                 WHERE site=? AND bcode=? AND snap_id=? AND window=?
                   AND status='pending'
                 """,
-                (now_iso, now_iso, site, row["bcode"], snap_id, DELTA_WINDOW),
+                (now_iso, now_iso, site if site is not None else row["site"], row["bcode"], snap_id, window),
             )
             if cur.rowcount == 1:
                 conn.commit()
@@ -659,6 +687,49 @@ def claim_next_delta(*, site: str, snap_id: str) -> dict[str, Any] | None:
         return {"_contended": True}
     finally:
         conn.close()
+
+
+def _as_bkk(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(BKK)
+
+
+def latest_delta_slot(now: datetime, hour: int = DEFAULT_DELTA_REFRESH_HOUR) -> datetime:
+    """Most recent HH:00 Asia/Bangkok that has already arrived."""
+    now_bkk = _as_bkk(now)
+    slot = now_bkk.replace(hour=hour, minute=0, second=0, microsecond=0)
+    if now_bkk < slot:
+        slot -= timedelta(days=1)
+    return slot
+
+
+def delta_refresh_due(
+    now: datetime,
+    last_snap_at: datetime | str | None,
+    hour: int = DEFAULT_DELTA_REFRESH_HOUR,
+) -> bool:
+    """True when the latest 19:00 slot is newer than the last snap refresh."""
+    if isinstance(last_snap_at, str):
+        last_snap_at = parse_iso_dt(last_snap_at)
+    if last_snap_at is None:
+        return True
+    return _as_bkk(last_snap_at) < latest_delta_slot(now, hour)
+
+
+def next_delta_refresh_at(
+    now: datetime,
+    last_snap_at: datetime | str | None,
+    hour: int = DEFAULT_DELTA_REFRESH_HOUR,
+) -> datetime:
+    """When the next daily refresh should start. `now` if the 19:00 slot is already due."""
+    now_bkk = _as_bkk(now)
+    if delta_refresh_due(now, last_snap_at, hour):
+        return now_bkk
+    slot = now_bkk.replace(hour=hour, minute=0, second=0, microsecond=0)
+    if now_bkk >= slot:
+        slot += timedelta(days=1)
+    return slot
 
 
 def _refresh_age_hours(last_snap_at: str | None) -> float | None:
@@ -671,6 +742,254 @@ def _refresh_age_hours(last_snap_at: str | None) -> float | None:
     return (now - prev.astimezone(now.tzinfo)).total_seconds() / 3600.0
 
 
+def _delta_refresh_hold(
+    last_snap_at: str | None,
+    *,
+    every_hours: int | None,
+    refresh_hour: int,
+    now: datetime | None = None,
+) -> str | None:
+    """Log line while the queue is empty, or None when a refresh should run."""
+    now = now or datetime.now().astimezone()
+    if every_hours is not None:
+        age_h = _refresh_age_hours(last_snap_at)
+        if age_h is None or age_h >= every_hours:
+            return None
+        wait_h = every_hours - age_h
+        return (
+            f"worker: delta queue empty; next snap refresh in {wait_h:.1f}h "
+            f"(every {every_hours}h)"
+        )
+    if delta_refresh_due(now, last_snap_at, hour=refresh_hour):
+        return None
+    nxt = next_delta_refresh_at(now, last_snap_at, hour=refresh_hour)
+    return (
+        "worker: delta queue empty; next snap refresh at "
+        f"{nxt.strftime('%Y-%m-%d %H:%M')} Asia/Bangkok"
+    )
+
+
+def _lane_open_counts(
+    conn: sqlite3.Connection, *, snap_id: str, window: str, site: str | None
+) -> tuple[int, int]:
+    if site is None:
+        row = conn.execute(
+            """
+            SELECT
+              SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending,
+              SUM(CASE WHEN status='running' THEN 1 ELSE 0 END) AS running
+            FROM insight_queue
+            WHERE snap_id=? AND window=?
+            """,
+            (snap_id, window),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            """
+            SELECT
+              SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending,
+              SUM(CASE WHEN status='running' THEN 1 ELSE 0 END) AS running
+            FROM insight_queue
+            WHERE site=? AND snap_id=? AND window=?
+            """,
+            (site, snap_id, window),
+        ).fetchone()
+    return int(row["pending"] or 0), int(row["running"] or 0)
+
+
+def _take_idle_pref(conn: sqlite3.Connection) -> str:
+    init_insights_schema(conn)
+    row = conn.execute("SELECT kind FROM idle_pref WHERE id=1").fetchone()
+    current = str(row["kind"]) if row and row["kind"] in ("syp", "qtymin") else "syp"
+    nxt = "qtymin" if current == "syp" else "syp"
+    conn.execute(
+        """
+        INSERT INTO idle_pref (id, kind) VALUES (1, ?)
+        ON CONFLICT(id) DO UPDATE SET kind=excluded.kind
+        """,
+        (nxt,),
+    )
+    conn.commit()
+    return current
+
+
+def _idle_sync_due(conn: sqlite3.Connection, *, min_seconds: int = 900) -> bool:
+    row = conn.execute("SELECT synced_at FROM idle_sync WHERE id=1").fetchone()
+    if row is None or not row["synced_at"]:
+        return True
+    stamped = parse_iso_dt(str(row["synced_at"]))
+    if stamped is None:
+        return True
+    if stamped.tzinfo is None:
+        stamped = stamped.replace(tzinfo=timezone.utc)
+    age = (datetime.now().astimezone() - stamped.astimezone()).total_seconds()
+    return age >= min_seconds
+
+
+def _mark_idle_synced(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        INSERT INTO idle_sync (id, synced_at) VALUES (1, ?)
+        ON CONFLICT(id) DO UPDATE SET synced_at=excluded.synced_at
+        """,
+        (utc_now_iso(),),
+    )
+    conn.commit()
+
+
+def _maybe_sync_idle_queues(snap_id: str) -> None:
+    """Build the SYP insight queue and the QTYMIN queue when both are drained."""
+    from src.kcw.product_insight_qtymin import QTYMIN_WINDOW, sync_qtymin_queue
+
+    with _delta_rebuild_lock() as got:
+        if not got:
+            return
+        conn = connect_insights()
+        try:
+            init_insights_schema(conn)
+            if not _idle_sync_due(conn):
+                return
+            syp_pending, syp_running = _lane_open_counts(
+                conn, snap_id=snap_id, window=DELTA_WINDOW, site="syp"
+            )
+            qty_pending, qty_running = _lane_open_counts(
+                conn, snap_id=snap_id, window=QTYMIN_WINDOW, site=None
+            )
+        finally:
+            conn.close()
+        if syp_running == 0 and syp_pending == 0:
+            counts = sync_delta_queue(site="syp", snap_id=snap_id)
+            print(
+                f"worker: syp delta sync pending={counts['pending']} "
+                f"never={counts['never']} moved={counts['moved']} quiet={counts['fresh']}",
+                flush=True,
+            )
+        if qty_running == 0 and qty_pending == 0:
+            for branch in ("hq", "syp"):
+                reviewed = sync_qtymin_queue(site=branch, snap_id=snap_id)
+                print(f"worker: qtymin sync site={branch} {reviewed}", flush=True)
+        conn = connect_insights()
+        try:
+            _mark_idle_synced(conn)
+        finally:
+            conn.close()
+
+
+def _run_one_idle_job(
+    *,
+    snap_id: str,
+    model: str,
+    lease_minutes: int,
+    max_retries: int,
+) -> bool:
+    """Claim one SYP insight or one QTYMIN review. False when both lanes are idle."""
+    from src.kcw.product_insight_qtymin import QTYMIN_WINDOW, pick_idle_kind, run_qtymin_model
+
+    _maybe_sync_idle_queues(snap_id)
+    conn = connect_insights()
+    try:
+        init_insights_schema(conn)
+        for branch, window in (("syp", DELTA_WINDOW), (None, QTYMIN_WINDOW)):
+            reclaim_stale_leases(
+                site=branch or "hq",
+                snap_id=snap_id,
+                window=window,
+                lease_minutes=lease_minutes,
+            )
+            if branch is None:
+                reclaim_stale_leases(
+                    site="syp",
+                    snap_id=snap_id,
+                    window=window,
+                    lease_minutes=lease_minutes,
+                )
+        syp_pending, _syp_running = _lane_open_counts(
+            conn, snap_id=snap_id, window=DELTA_WINDOW, site="syp"
+        )
+        qty_pending, _qty_running = _lane_open_counts(
+            conn, snap_id=snap_id, window=QTYMIN_WINDOW, site=None
+        )
+        prefer = _take_idle_pref(conn)
+    finally:
+        conn.close()
+    kind, _nxt = pick_idle_kind(
+        prefer, syp_pending=syp_pending > 0, qtymin_pending=qty_pending > 0
+    )
+    if kind is None:
+        return False
+    if kind == "syp":
+        item = claim_next_delta(site="syp", snap_id=snap_id, window=DELTA_WINDOW)
+        if item is None or item.get("_contended"):
+            return False
+        bcode = str(item["bcode"])
+        print(
+            f"worker: claim syp-insight {bcode} score={item.get('movement_score')}",
+            flush=True,
+        )
+        try:
+            res = generate_one(
+                site="syp",
+                bcode=bcode,
+                snap_id=snap_id,
+                window=DELTA_WINDOW,
+                facts_as_of=item.get("facts_as_of") or utc_now_iso(),
+                prompt=load_prompt("syp"),
+                model=model,
+            )
+            print(
+                f"worker: syp-insight {bcode} {res['elapsed_s']}s :: {(res.get('summary') or '')[:80]}",
+                flush=True,
+            )
+        except Exception as exc:
+            err = f"{type(exc).__name__}: {exc}"
+            print(f"worker: ERROR syp-insight {bcode}: {err}", flush=True)
+            traceback.print_exc()
+            _mark_error(
+                site="syp",
+                bcode=bcode,
+                snap_id=snap_id,
+                window=DELTA_WINDOW,
+                error=err,
+                max_retries=max_retries,
+            )
+        return True
+
+    item = claim_next_delta(site=None, snap_id=snap_id, window=QTYMIN_WINDOW)
+    if item is None or item.get("_contended"):
+        return False
+    bcode = str(item["bcode"])
+    branch = str(item["site"])
+    print(
+        f"worker: claim qtymin {branch} {bcode} score={item.get('movement_score')}",
+        flush=True,
+    )
+    try:
+        res = run_qtymin_model(
+            site=branch,
+            bcode=bcode,
+            snap_id=snap_id,
+            insight_generated_at=item.get("facts_as_of"),
+            model=model,
+        )
+        print(
+            f"worker: qtymin {branch} {bcode} {res['elapsed_s']}s :: {(res.get('summary') or '')[:80]}",
+            flush=True,
+        )
+    except Exception as exc:
+        err = f"{type(exc).__name__}: {exc}"
+        print(f"worker: ERROR qtymin {branch} {bcode}: {err}", flush=True)
+        traceback.print_exc()
+        _mark_error(
+            site=branch,
+            bcode=bcode,
+            snap_id=snap_id,
+            window=QTYMIN_WINDOW,
+            error=err,
+            max_retries=max_retries,
+        )
+    return True
+
+
 def _run_delta_worker(
     *,
     site: str,
@@ -680,13 +999,15 @@ def _run_delta_worker(
     years: int,
     max_jobs: int | None,
     model: str | None,
-    delta_every_hours: int,
+    delta_every_hours: int | None,
+    delta_refresh_hour: int,
     state: dict[str, Any],
 ) -> int:
-    """Drain a movement queue, then refresh the snap and build the next shorter one."""
+    """Drain the movement queue, then refresh at 19:00 Asia/Bangkok."""
     del years  # full extracts stay on the age-mode path; delta refreshes in place
     idle_seconds = max(15, int(idle_seconds))
-    every_hours = max(1, int(delta_every_hours))
+    every_hours = None if delta_every_hours is None else max(1, int(delta_every_hours))
+    refresh_hour = min(23, max(0, int(delta_refresh_hour)))
     last_snap_at = state.get("last_snap_at")
     prompt = load_prompt()
     model_id: str | None = None
@@ -704,8 +1025,13 @@ def _run_delta_worker(
                 time.sleep(idle_seconds)
         return model_id
 
+    schedule = (
+        f"every={every_hours}h"
+        if every_hours is not None
+        else f"daily={refresh_hour:02d}:00 Asia/Bangkok"
+    )
     print(
-        f"worker start site={site} mode=delta every={every_hours}h "
+        f"worker start site={site} mode=delta {schedule} "
         f"model={model or 'auto'} prompt={prompt.get('version')} spark={SPARK_BASE}",
         flush=True,
     )
@@ -804,14 +1130,25 @@ def _run_delta_worker(
             time.sleep(idle_seconds)
             continue
 
-        age_h = _refresh_age_hours(last_snap_at)
-        if age_h is not None and age_h < every_hours:
-            wait_h = every_hours - age_h
-            print(
-                f"worker: delta queue empty; next snap refresh in {wait_h:.1f}h "
-                f"(every {every_hours}h)",
-                flush=True,
-            )
+        hold = _delta_refresh_hold(
+            last_snap_at, every_hours=every_hours, refresh_hour=refresh_hour
+        )
+        if hold is not None:
+            try:
+                worked = _run_one_idle_job(
+                    snap_id=snap_id,
+                    model=_model(),
+                    lease_minutes=lease_minutes,
+                    max_retries=max_retries,
+                )
+            except Exception as exc:
+                print(f"worker: idle job failed: {exc}", flush=True)
+                traceback.print_exc()
+                worked = False
+            if worked:
+                jobs_done += 1
+                continue
+            print(hold, flush=True)
             time.sleep(idle_seconds)
             continue
 
@@ -829,8 +1166,11 @@ def _run_delta_worker(
                 conn.close()
             if pending or running:
                 continue
-            age_h = _refresh_age_hours(state.get("last_snap_at"))
-            if age_h is not None and age_h < every_hours:
+            if _delta_refresh_hold(
+                state.get("last_snap_at"),
+                every_hours=every_hours,
+                refresh_hour=refresh_hour,
+            ) is not None:
                 continue
             refresh_failed = False
             try:
@@ -888,7 +1228,8 @@ def run_worker(
     model: str | None = None,
     delta: bool = False,
     no_delta: bool = False,
-    delta_every_hours: int = DEFAULT_DELTA_EVERY_HOURS,
+    delta_every_hours: int | None = None,
+    delta_refresh_hour: int = DEFAULT_DELTA_REFRESH_HOUR,
 ) -> int:
     """Run forever (or until max_jobs). concurrency is forced to 1 on this path."""
     site = site.lower()
@@ -918,6 +1259,7 @@ def run_worker(
             max_jobs=max_jobs,
             model=model,
             delta_every_hours=delta_every_hours,
+            delta_refresh_hour=delta_refresh_hour,
             state=state,
         )
 
