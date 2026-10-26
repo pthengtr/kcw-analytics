@@ -323,6 +323,7 @@ def build_account_sheets(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
         g = group.copy()
         g = g.sort_values(
             ["วันที่", "วันที่มีผล", "source_row_number"],
+            ascending=[False, False, False],
             kind="stable",
             na_position="last",
         ).reset_index(drop=True)
