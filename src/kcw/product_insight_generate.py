@@ -8,6 +8,7 @@ import os
 import re
 import sqlite3
 import time
+import urllib.error
 import urllib.request
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -29,7 +30,66 @@ from src.kcw.product_insight_store import (
 )
 
 MAX_LINES_PER_KIND = 40  # prompt line dump; rollups still use full history
-SPARK_BASE = os.getenv("SPARK_VLLM_BASE_URL", "http://spark-3583:8000/v1").rstrip("/")
+# LAN primary. The Tailscale address is used only when that LAN port does not answer.
+_LAN_TAILSCALE = {
+    "http://192.168.1.44:8000/v1": "http://100.113.10.32:8000/v1",  # spark-3583
+    "http://192.168.1.43:8000/v1": "http://100.69.200.15:8000/v1",  # spark-50be
+}
+_SPARK_PROBE_SECONDS = 2.0
+_active_spark: str | None = None
+
+
+def spark_urls() -> list[str]:
+    """Primary URL, then Tailscale fallback. SPARK_VLLM_FALLBACK_URL overrides the map."""
+    primary = os.getenv("SPARK_VLLM_BASE_URL", "http://192.168.1.44:8000/v1").rstrip("/")
+    explicit = os.getenv("SPARK_VLLM_FALLBACK_URL", "").strip().rstrip("/")
+    fallback = explicit or _LAN_TAILSCALE.get(primary, "")
+    urls = [primary]
+    if fallback and fallback != primary:
+        urls.append(fallback)
+    return urls
+
+
+def _probe_spark(url: str) -> None:
+    with urllib.request.urlopen(f"{url}/models", timeout=_SPARK_PROBE_SECONDS) as resp:
+        resp.read(1)
+
+
+def spark_base() -> str:
+    """LAN vLLM URL, or the Tailscale URL when LAN does not answer.
+
+    A working LAN choice is kept. A fallback choice is checked against LAN on the
+    next call so a recovered box is used again.
+    """
+    global _active_spark
+    urls = spark_urls()
+    primary = urls[0]
+    if _active_spark == primary:
+        return _active_spark
+    if _active_spark and _active_spark != primary:
+        try:
+            _probe_spark(primary)
+        except Exception:
+            return _active_spark
+        print(f"spark: primary back, using {primary}", flush=True)
+        _active_spark = primary
+        return _active_spark
+    errors: list[str] = []
+    for url in urls:
+        try:
+            _probe_spark(url)
+        except Exception as exc:
+            errors.append(f"{url}: {exc}")
+            continue
+        if url != primary:
+            print(f"spark: {primary} unreachable, using {url}", flush=True)
+        _active_spark = url
+        return url
+    _active_spark = None
+    raise RuntimeError("spark vLLM unreachable; " + "; ".join(errors))
+
+
+SPARK_BASE = os.getenv("SPARK_VLLM_BASE_URL", "http://192.168.1.44:8000/v1").rstrip("/")
 
 
 def parse_window(window: str, *, as_of: date | None = None) -> date:
@@ -747,14 +807,35 @@ def _facts_hash(facts: dict[str, Any]) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
 
+def _connect_failure(exc: BaseException) -> bool:
+    """True when the Spark never accepted the connection. HTTP and read timeouts are not."""
+    if isinstance(exc, urllib.error.HTTPError):
+        return False
+    reason = getattr(exc, "reason", exc)
+    if isinstance(reason, TimeoutError):
+        return False
+    text = str(reason).lower()
+    return any(
+        phrase in text
+        for phrase in (
+            "connection refused",
+            "network is unreachable",
+            "network unreachable",
+            "host is unreachable",
+            "no route to host",
+        )
+    )
+
+
 def resolve_model(model: str | None = None) -> str:
     """Pick Spark model id: explicit arg → SPARK_MODEL env → listed id → first loaded."""
     preferred = (model or os.getenv("SPARK_MODEL") or os.getenv("PRODUCT_INSIGHT_MODEL") or "").strip()
-    with urllib.request.urlopen(f"{SPARK_BASE}/models", timeout=30) as r:
+    base = spark_base()
+    with urllib.request.urlopen(f"{base}/models", timeout=30) as r:
         data = json.load(r)
     ids = [m["id"] for m in (data.get("data") or []) if m.get("id")]
     if not ids:
-        raise RuntimeError(f"no models at {SPARK_BASE}/models")
+        raise RuntimeError(f"no models at {base}/models")
     if preferred:
         if preferred in ids:
             return preferred
@@ -778,19 +859,32 @@ def _spark_chat(*, model: str, system: str, user: str, temperature: float) -> tu
             "max_tokens": 4096,
         }
     ).encode()
-    req = urllib.request.Request(
-        f"{SPARK_BASE}/chat/completions",
-        data=payload,
-        headers={"Content-Type": "application/json", "Authorization": "Bearer local"},
-        method="POST",
-    )
-    t0 = time.time()
-    with urllib.request.urlopen(req, timeout=3600) as r:
-        body = json.load(r)
-    elapsed = time.time() - t0
-    msg = body["choices"][0]["message"]
-    content = _message_text(msg)
-    return content, body.get("usage"), elapsed
+    global _active_spark
+    last_exc: BaseException | None = None
+    for _attempt in range(2):
+        base = spark_base()
+        req = urllib.request.Request(
+            f"{base}/chat/completions",
+            data=payload,
+            headers={"Content-Type": "application/json", "Authorization": "Bearer local"},
+            method="POST",
+        )
+        t0 = time.time()
+        try:
+            with urllib.request.urlopen(req, timeout=3600) as r:
+                body = json.load(r)
+        except urllib.error.URLError as exc:
+            if not _connect_failure(exc) or _attempt == 1:
+                raise
+            print(f"spark: {base} connect failed ({exc}); trying fallback", flush=True)
+            _active_spark = None
+            last_exc = exc
+            continue
+        elapsed = time.time() - t0
+        msg = body["choices"][0]["message"]
+        content = _message_text(msg)
+        return content, body.get("usage"), elapsed
+    raise last_exc if last_exc is not None else RuntimeError("spark chat failed")
 
 
 def _message_text(msg: dict[str, Any] | None) -> str:
