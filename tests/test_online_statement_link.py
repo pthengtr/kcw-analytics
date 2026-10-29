@@ -7,8 +7,10 @@ from openpyxl import Workbook
 from src.kcw.online_statement_link import (
     BankCredit,
     Payout,
+    StatementLine,
     assign_tiktok,
     collect_payouts,
+    drop_repeated_shopee_orders,
     link_bills,
     match_bank_deposits,
     match_order,
@@ -326,6 +328,87 @@ def test_bank_credit_links_the_statement_week_that_sums_to_it():
     assert week.period_to == date(2026, 9, 20)
     assert len(week.payout_keys) == 7
     assert by_line["line-2"].shop == "LPNT"
+
+
+def test_zero_statement_day_does_not_hide_the_real_payout():
+    payouts = [
+        _day_payout("LICE", date(2026, 10, 13), "712.46"),
+        _day_payout("LICE", date(2026, 10, 15), "0.00"),
+    ]
+    deposits = match_bank_deposits(
+        payouts,
+        [BankCredit("line-1", date(2026, 10, 21), Decimal("712.46"), "BPS/017/01/Lazada Ltd./108682")],
+    )
+    assert len(deposits) == 1
+    assert deposits[0].shop == "LICE"
+    assert deposits[0].period_from == date(2026, 10, 13)
+    assert deposits[0].period_to == date(2026, 10, 13)
+    assert deposits[0].payout_keys == (payouts[0].payout_key,)
+
+
+def _income_order(order_id: str, net: str, when: str) -> StatementLine:
+    return StatementLine(
+        kind="order",
+        order_id=order_id,
+        fee_name="รายรับจากคำสั่งซื้อ",
+        detail="",
+        gross=Decimal(net),
+        expense=Decimal("0"),
+        net=Decimal(net),
+        txn_at=datetime.fromisoformat(when).replace(tzinfo=BKK),
+    )
+
+
+def _income_payout(shop: str, day: date, lines: list[StatementLine]) -> Payout:
+    return Payout(
+        platform="shopee",
+        shop=shop,
+        payout_at=datetime(day.year, day.month, day.day, tzinfo=BKK),
+        amount=sum((line.net for line in lines), Decimal("0")),
+        reference=day.isoformat(),
+        status="transferred",
+        source_file=f"Shopee/{shop}/{day.isoformat()}.xlsx",
+        note="รายงานรายรับ Shopee พร้อมรายละเอียดค่าใช้จ่าย",
+        lines=lines,
+    )
+
+
+def test_later_income_file_keeps_the_repeated_boundary_orders():
+    early = _income_payout(
+        "SPNT",
+        date(2026, 10, 20),
+        [
+            _income_order("KEEP", "32340", "2026-10-19"),
+            _income_order("AGAIN", "4004", "2026-10-20"),
+        ],
+    )
+    later = _income_payout(
+        "SPNT",
+        date(2026, 10, 26),
+        [_income_order("AGAIN", "4004", "2026-10-20")],
+    )
+    refunded = _income_payout(
+        "SPNT",
+        date(2026, 9, 13),
+        [_income_order("OLD", "100", "2026-09-13")],
+    )
+    refund = _income_payout(
+        "SPNT",
+        date(2026, 9, 20),
+        [_income_order("OLD", "-40", "2026-09-20")],
+    )
+    drop_repeated_shopee_orders([early, later, refunded, refund])
+    assert [line.order_id for line in early.lines] == ["KEEP"]
+    assert early.amount == Decimal("32340")
+    assert [line.order_id for line in later.lines] == ["AGAIN"]
+    assert [line.order_id for line in refunded.lines] == ["OLD"]
+    assert [line.order_id for line in refund.lines] == ["OLD"]
+    deposits = match_bank_deposits(
+        [early, later],
+        [BankCredit("line-1", date(2026, 10, 20), Decimal("32340"), "TR from 9825080752 Shopeepay")],
+    )
+    assert [item.statement_line_id for item in deposits] == ["line-1"]
+    assert deposits[0].amount == Decimal("32340")
 
 
 def test_bank_credit_skips_an_amount_shared_by_two_shops():
