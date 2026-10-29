@@ -65,7 +65,8 @@ TAR / CNTAR lines in sales Excel always treat amount as **VAT-inclusive** (`TOTA
 2. Drop bills whose `BILLNO` contains `TF`
 3. Split by bill prefix, then summarize per bill (`build_bill_summary_by_taxic`)
 4. `DETAIL` (รายการสินค้า) comes from the line with the largest `|AMOUNT|`. Credit-note lines are negative, so algebraic `idxmax` would pick the smallest credit.
-5. Enrich from SIMAS (`ACCTNO`, `ACCTNAME`, tax fields, `PO`, …) and ARMAS `MOBILE`
+5. Enrich from SIMAS (`ACCTNO`, `ACCTNAME`, tax fields, `PO`, `CANCELED`, …) and ARMAS `MOBILE`
+6. `CANCELED = Y` stays on the sales book. `BEFORETAX`, `TAX`, `AFTERTAX`, and the computed VAT totals are set to 0 so the invoice number remains and the amount is zero.
 
 | Site | Doc type | Bill prefixes | Staging file |
 |------|----------|---------------|--------------|
@@ -147,6 +148,12 @@ Purchase book columns use PIMAS tax fields (`BEFORETAX` / `TAX` / `AFTERTAX` →
 | `billgen.fin_3tar_lines` | 3TAR |
 | `billgen.fin_cntar_lines` | CNTAR |
 | `billgen.fin_3cntar_lines` | 3CNTAR |
+
+### Canceled bills
+
+SIMAS `CANCELED = Y` is a canceled tax invoice. The bill stays on its sheet (TD / TAD / TR / CN / CNTAD and the SYP `3*` sheets, plus รวม) so the invoice sequence is intact. `มูลค่าสินค้า`, `ภาษีมูลค่าเพิ่ม`, and `ยอดสุทธิ` are 0.
+
+Notebook 30 zeros the staging amounts. Notebook 32 zeros again from raw SIMAS `CANCELED`, so rerunning the Excel step still shows 0 even when staging was built earlier.
 
 ### TAR amount rule
 
