@@ -884,6 +884,7 @@ def collect_payouts(root: Path | None = None) -> list[Payout]:
             tiktok_files[shop] = rel
 
     payouts = _dedupe_payouts(lazada_shopee)
+    drop_repeated_shopee_orders(payouts)
     for shop, orders in tiktok_orders.items():
         unique_orders = _dedupe_lines(orders)
         assigned = assign_tiktok(
@@ -906,6 +907,42 @@ def _dedupe_lines(lines: list[StatementLine]) -> list[StatementLine]:
         seen.add(key)
         out.append(line)
     return out
+
+
+def drop_repeated_shopee_orders(payouts: list[Payout]) -> None:
+    """Drop an income-file order that a later income file repeats at the same net.
+
+    Weekly Shopee exports overlap on the boundary day. The later file is the
+    settlement that pays those orders, so the earlier copy must not inflate
+    that payout above the bank credit.
+    """
+    income = [
+        payout
+        for payout in payouts
+        if payout.platform == "shopee" and payout.note.startswith(_SHOPEE_INCOME_NOTE)
+    ]
+    latest: dict[tuple[str, str, Decimal], datetime] = {}
+    for payout in income:
+        when = payout.payout_at or datetime.min.replace(tzinfo=BKK)
+        for line in payout.lines:
+            if not line.order_id:
+                continue
+            key = (payout.shop, line.order_id, _q(line.net))
+            prev = latest.get(key)
+            if prev is None or when > prev:
+                latest[key] = when
+    for payout in income:
+        when = payout.payout_at or datetime.min.replace(tzinfo=BKK)
+        kept: list[StatementLine] = []
+        for line in payout.lines:
+            key = (payout.shop, line.order_id, _q(line.net))
+            if line.order_id and latest.get(key, when) > when:
+                continue
+            kept.append(line)
+        if len(kept) == len(payout.lines):
+            continue
+        payout.lines = kept
+        payout.amount = _q(sum((line.net for line in kept), Decimal("0")))
 
 
 def _dedupe_payouts(payouts: list[Payout]) -> list[Payout]:
@@ -1093,6 +1130,9 @@ def match_bank_deposits(
 
     windows: list[tuple[str, str, Decimal, date, date, tuple[str, ...]]] = []
     for (platform, shop), items in grouped.items():
+        # A zero-net statement day (a refund that nets out) must not create a
+        # second window with the same total as the real payout.
+        items = [payout for payout in items if _q(payout.amount) != 0]
         items.sort(key=lambda payout: _payout_day(payout) or date.min)
         for start_i, first in enumerate(items):
             total = Decimal("0")
