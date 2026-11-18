@@ -1112,6 +1112,28 @@ def _payout_day(payout: Payout) -> date | None:
     return as_aware(payout.payout_at).date()
 
 
+def _pending_span(payout: Payout) -> tuple[date, date] | None:
+    """Wallet remainder that has not been given a Withdrawal row yet.
+
+    TikTok's weekly file lists the orders (and Earnings) that already equal the
+    next bank credit, while the Withdrawal line for that sweep is still absent.
+    The remainder is one payout, dated on its last order day, covering at most
+    the same seven-day settlement window as a transferred week.
+    """
+    end = _payout_day(payout)
+    if payout.status != "pending" or end is None or _q(payout.amount) == 0:
+        return None
+    start_dates = [
+        as_aware(line.txn_at).date()
+        for line in payout.lines
+        if line.txn_at is not None and as_aware(line.txn_at) is not None
+    ]
+    start = min(start_dates) if start_dates else end
+    if start > end or (end - start).days > _MAX_SETTLEMENT_SPAN_DAYS:
+        return None
+    return start, end
+
+
 def match_bank_deposits(
     payouts: list[Payout],
     credits: list[BankCredit],
@@ -1120,6 +1142,8 @@ def match_bank_deposits(
 
     A match is one shop, a window of at most seven calendar days, paid within
     10 days after the last statement day. Ambiguous sums are left unlinked.
+    A not-yet-withdrawn wallet remainder is linked the same way when its amount
+    is the only candidate for a credit the transferred weeks did not take.
     """
     grouped: dict[tuple[str, str], list[Payout]] = {}
     for payout in payouts:
@@ -1178,11 +1202,59 @@ def match_bank_deposits(
 
     ranked.sort(key=lambda item: (item[0], item[1], item[2].statement_line_id))
     used_keys: set[str] = set()
+    used_lines: set[str] = set()
     chosen: list[BankDeposit] = []
     for _lag, _bank_date, deposit in ranked:
         if any(key in used_keys for key in deposit.payout_keys):
             continue
         used_keys.update(deposit.payout_keys)
+        used_lines.add(deposit.statement_line_id)
+        chosen.append(deposit)
+
+    pending_ranked: list[tuple[int, date, BankDeposit]] = []
+    for credit in credits:
+        if credit.statement_line_id in used_lines:
+            continue
+        platform = bank_platform(credit.description)
+        if platform is None:
+            continue
+        amount = _q(credit.amount)
+        found: dict[str, BankDeposit] = {}
+        for payout in payouts:
+            if payout.platform != platform:
+                continue
+            span = _pending_span(payout)
+            if span is None or _q(payout.amount) != amount:
+                continue
+            start, end = span
+            lag = (credit.txn_date - end).days
+            if lag < 0 or lag > _MAX_BANK_LAG_DAYS:
+                continue
+            found[payout.payout_key] = BankDeposit(
+                statement_line_id=credit.statement_line_id,
+                platform=platform,
+                shop=payout.shop,
+                bank_date=credit.txn_date,
+                amount=amount,
+                period_from=start,
+                period_to=end,
+                payout_keys=(payout.payout_key,),
+            )
+        if len(found) != 1:
+            continue
+        deposit = next(iter(found.values()))
+        pending_ranked.append(
+            ((deposit.bank_date - deposit.period_to).days, deposit.bank_date, deposit)
+        )
+
+    pending_ranked.sort(key=lambda item: (item[0], item[1], item[2].statement_line_id))
+    for _lag, _bank_date, deposit in pending_ranked:
+        if deposit.statement_line_id in used_lines:
+            continue
+        if any(key in used_keys for key in deposit.payout_keys):
+            continue
+        used_keys.update(deposit.payout_keys)
+        used_lines.add(deposit.statement_line_id)
         chosen.append(deposit)
     return chosen
 
