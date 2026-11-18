@@ -274,6 +274,30 @@ def remote_insight_marks(site: str) -> dict[str, dict[str, str | None]]:
     return out
 
 
+def remote_stale_model_bcodes(site: str, target_model: str) -> dict[str, str | None]:
+    """bcode -> model_id for insights that are not yet on target_model (e.g. Nemotron)."""
+    target = (target_model or "").strip()
+    if not target:
+        raise ValueError("target_model is required")
+    with _pg_connect() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT bcode, model_id
+            FROM {INSIGHT_TABLE}
+            WHERE site = %s
+              AND COALESCE(model_id, '') <> %s
+            """,
+            (site.lower(), target),
+        ).fetchall()
+    out: dict[str, str | None] = {}
+    for bcode, model_id in rows:
+        code = str(bcode or "").strip()
+        if not code:
+            continue
+        out[code] = str(model_id) if model_id else None
+    return out
+
+
 def upsert_insight(
     *,
     site: str,

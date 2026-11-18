@@ -32,7 +32,7 @@ from src.kcw.product_insight_store import (
 MAX_LINES_PER_KIND = 40  # prompt line dump; rollups still use full history
 # LAN primary. The Tailscale address is used only when that LAN port does not answer.
 _LAN_TAILSCALE = {
-    "http://192.168.1.44:8000/v1": "http://100.113.10.32:8000/v1",  # spark-3583
+    "http://192.168.1.7:8000/v1": "http://100.113.10.32:8000/v1",  # spark-3583
     "http://192.168.1.43:8000/v1": "http://100.69.200.15:8000/v1",  # spark-50be
 }
 _SPARK_PROBE_SECONDS = 2.0
@@ -41,7 +41,7 @@ _active_spark: str | None = None
 
 def spark_urls() -> list[str]:
     """Primary URL, then Tailscale fallback. SPARK_VLLM_FALLBACK_URL overrides the map."""
-    primary = os.getenv("SPARK_VLLM_BASE_URL", "http://192.168.1.44:8000/v1").rstrip("/")
+    primary = os.getenv("SPARK_VLLM_BASE_URL", "http://192.168.1.7:8000/v1").rstrip("/")
     explicit = os.getenv("SPARK_VLLM_FALLBACK_URL", "").strip().rstrip("/")
     fallback = explicit or _LAN_TAILSCALE.get(primary, "")
     urls = [primary]
@@ -89,7 +89,7 @@ def spark_base() -> str:
     raise RuntimeError("spark vLLM unreachable; " + "; ".join(errors))
 
 
-SPARK_BASE = os.getenv("SPARK_VLLM_BASE_URL", "http://192.168.1.44:8000/v1").rstrip("/")
+SPARK_BASE = os.getenv("SPARK_VLLM_BASE_URL", "http://192.168.1.7:8000/v1").rstrip("/")
 
 
 def parse_window(window: str, *, as_of: date | None = None) -> date:
@@ -857,6 +857,8 @@ def _spark_chat(*, model: str, system: str, user: str, temperature: float) -> tu
             ],
             "temperature": temperature,
             "max_tokens": 4096,
+            # GLM-5.3 defaults to deep thinking; keep insight JSON cheap/stable.
+            "chat_template_kwargs": {"enable_thinking": False, "reasoning_effort": "low"},
         }
     ).encode()
     global _active_spark

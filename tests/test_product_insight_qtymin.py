@@ -89,7 +89,21 @@ def test_idle_alternates_and_falls_through():
     kind, nxt = pick_idle_kind("syp", syp_pending=True, qtymin_pending=True)
     assert (kind, nxt) == ("syp", "qtymin")
     kind, nxt = pick_idle_kind("qtymin", syp_pending=True, qtymin_pending=True)
-    assert (kind, nxt) == ("qtymin", "syp")
+    assert (kind, nxt) == ("qtymin", "rebackfill")
+    kind, nxt = pick_idle_kind(
+        "rebackfill",
+        syp_pending=True,
+        qtymin_pending=True,
+        rebackfill_pending=True,
+    )
+    assert (kind, nxt) == ("rebackfill", "syp")
     kind, nxt = pick_idle_kind("syp", syp_pending=False, qtymin_pending=True)
     assert kind == "qtymin"
+    kind, nxt = pick_idle_kind(
+        "syp",
+        syp_pending=False,
+        qtymin_pending=False,
+        rebackfill_pending=True,
+    )
+    assert kind == "rebackfill"
     assert pick_idle_kind("syp", syp_pending=False, qtymin_pending=False)[0] is None
