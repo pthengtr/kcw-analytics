@@ -8,6 +8,8 @@ Type=oneshot
 WorkingDirectory=%h/projects/kcw-analytic
 Environment=TZ=Asia/Bangkok
 TimeoutStartSec=1800
+# Transient MSSQL blips must not trip systemd start-limit and kill the timer.
+StartLimitIntervalSec=0
 Nice=10
 ExecStartPre=/usr/bin/mkdir -p %h/projects/kcw-analytic/logs
 ExecStart=%h/projects/kcw-analytic/worker_tasks/linux/sync_icmas_master_queue.sh --limit 500
