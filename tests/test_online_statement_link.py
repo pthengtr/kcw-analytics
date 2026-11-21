@@ -411,6 +411,98 @@ def test_later_income_file_keeps_the_repeated_boundary_orders():
     assert deposits[0].amount == Decimal("32340")
 
 
+def _wallet_order(order_id: str, net: str, day: date) -> StatementLine:
+    return StatementLine(
+        kind="order",
+        order_id=order_id,
+        fee_name="",
+        detail="",
+        gross=Decimal(net),
+        expense=Decimal("0"),
+        net=Decimal(net),
+        txn_at=datetime(day.year, day.month, day.day, tzinfo=BKK),
+    )
+
+
+def _pending_wallet(shop: str, lines: list[StatementLine]) -> Payout:
+    last = max(line.txn_at for line in lines if line.txn_at)
+    return Payout(
+        platform="tiktok",
+        shop=shop,
+        payout_at=last,
+        amount=sum((line.net for line in lines), Decimal("0")),
+        reference="ยังไม่ถอนเข้าบัญชี",
+        status="pending",
+        source_file=f"Tiktok/{shop}/week.xlsx",
+        note="เงินเข้าวอลเล็ตในวันถอนหรือหลังจากนั้น ยังไม่เข้าบัญชี",
+        lines=lines,
+    )
+
+
+def test_tiktok_wallet_remainder_links_when_the_bank_already_received_it():
+    pending = _pending_wallet(
+        "ICE",
+        [
+            _wallet_order("A", "100.00", date(2026, 10, 21)),
+            _wallet_order("B", "50.00", date(2026, 10, 27)),
+        ],
+    )
+    deposits = match_bank_deposits(
+        [pending],
+        [
+            BankCredit(
+                "line-1",
+                date(2026, 10, 28),
+                Decimal("150.00"),
+                "024-6993647915 Future Amount: 150.00",
+            )
+        ],
+    )
+    assert len(deposits) == 1
+    assert deposits[0].statement_line_id == "line-1"
+    assert deposits[0].shop == "ICE"
+    assert deposits[0].period_from == date(2026, 10, 21)
+    assert deposits[0].period_to == date(2026, 10, 27)
+    assert deposits[0].payout_keys == ("pending|tiktok|ICE",)
+
+
+def test_transferred_week_keeps_a_bank_credit_ahead_of_the_same_pending_amount():
+    transferred = Payout(
+        platform="tiktok",
+        shop="ICE",
+        payout_at=datetime(2026, 10, 28, tzinfo=BKK),
+        amount=Decimal("150.00"),
+        reference="3734",
+        status="transferred",
+        source_file="Tiktok/ICE/week.xlsx",
+        note="",
+    )
+    pending = _pending_wallet("ICE", [_wallet_order("A", "150.00", date(2026, 10, 27))])
+    deposits = match_bank_deposits(
+        [transferred, pending],
+        [
+            BankCredit(
+                "line-1",
+                date(2026, 10, 28),
+                Decimal("150.00"),
+                "024-6993647915",
+            )
+        ],
+    )
+    assert [item.payout_keys for item in deposits] == [(transferred.payout_key,)]
+
+
+def test_two_pending_wallets_with_the_same_amount_stay_unlinked():
+    deposits = match_bank_deposits(
+        [
+            _pending_wallet("ICE", [_wallet_order("A", "150.00", date(2026, 10, 27))]),
+            _pending_wallet("PNT", [_wallet_order("B", "150.00", date(2026, 10, 27))]),
+        ],
+        [BankCredit("line-1", date(2026, 10, 28), Decimal("150.00"), "024-6993647915")],
+    )
+    assert deposits == []
+
+
 def test_bank_credit_skips_an_amount_shared_by_two_shops():
     payouts = [
         _day_payout("LAZ1", date(2026, 9, 20), "100.00"),
