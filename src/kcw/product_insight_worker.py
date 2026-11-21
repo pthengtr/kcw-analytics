@@ -5,6 +5,10 @@ Delta mode (--delta): incremental snap refresh, then a finite queue of never-ana
 previous errors, and products whose snap bills are newer than the insight already stored.
 When that queue drains, the next refresh waits until 19:00 Asia/Bangkok so the
 day's bills are in before the next batch.
+
+While waiting for the daily refresh, idle lanes keep working: SYP delta, QTYMIN, then
+a GLM rebackfill of HQ+SYP insights still on an older model (e.g. Nemotron). The 19:00
+snap refresh always wins once its slot is due.
 """
 
 from __future__ import annotations
@@ -35,6 +39,7 @@ from src.kcw.product_insight_store import (
     parse_iso_dt,
     remote_generated_at,
     remote_insight_marks,
+    remote_stale_model_bcodes,
     resolve_snap_id,
     snap_path,
     utc_now_iso,
@@ -43,6 +48,7 @@ from src.kcw.product_insight_store import (
 BACKFILL_WINDOW = "5y"
 STEADY_WINDOW = "7d"
 DELTA_WINDOW = "delta"
+REBACKFILL_WINDOW = "glm-rebackfill"
 DEFAULT_FRESH_DAYS = 14
 DEFAULT_DELTA_EVERY_HOURS = 6  # only when --delta-every-hours is set
 DEFAULT_DELTA_REFRESH_HOUR = 19  # Asia/Bangkok, after the shop day
@@ -635,6 +641,79 @@ def sync_delta_queue(*, site: str, snap_id: str) -> dict[str, int]:
         conn.close()
 
 
+def sync_rebackfill_queue(*, site: str, snap_id: str, target_model: str) -> dict[str, int]:
+    """Queue existing insights that are not yet on target_model (Nemotron → GLM, etc.).
+
+    Never-analyzed SKUs stay on the delta lane. Call only when this window has no
+    running leases for the site.
+    """
+    site = site.lower()
+    facts_as_of, bills = _snap_bill_index(
+        snap_id, src_site=site if site == "syp" else None
+    )
+    score_by = {bcode: int(score or 0) for bcode, _max_date, score in bills}
+    stale = remote_stale_model_bcodes(site, target_model)
+    now_iso = utc_now_iso()
+    due = [(bcode, score_by.get(bcode, 0)) for bcode in stale]
+    due.sort(key=lambda row: (-row[1], row[0]))
+
+    conn = connect_insights()
+    try:
+        init_insights_schema(conn)
+        running = conn.execute(
+            """
+            SELECT COUNT(*) AS n FROM insight_queue
+            WHERE site=? AND snap_id=? AND window=? AND status='running'
+            """,
+            (site, snap_id, REBACKFILL_WINDOW),
+        ).fetchone()
+        if int(running["n"] or 0) > 0:
+            return {
+                "snap_products": len(bills),
+                "stale": len(stale),
+                "pending": 0,
+                "skipped_running": int(running["n"] or 0),
+            }
+        conn.execute(
+            """
+            UPDATE insight_queue
+            SET status='done', leased_at=NULL, updated_at=?
+            WHERE site=? AND snap_id=? AND window=?
+            """,
+            (now_iso, site, snap_id, REBACKFILL_WINDOW),
+        )
+        conn.executemany(
+            """
+            INSERT INTO insight_queue (
+              site, bcode, snap_id, facts_as_of, window, movement_score,
+              status, updated_at, leased_at, retry_count, last_error, due_tier
+            ) VALUES (?,?,?,?,?,?, 'pending', ?, NULL, 0, NULL, 2)
+            ON CONFLICT(site, bcode, snap_id, window) DO UPDATE SET
+              facts_as_of=excluded.facts_as_of,
+              movement_score=excluded.movement_score,
+              due_tier=excluded.due_tier,
+              status='pending',
+              updated_at=excluded.updated_at,
+              leased_at=NULL,
+              retry_count=0,
+              last_error=NULL
+            """,
+            [
+                (site, bcode, snap_id, facts_as_of, REBACKFILL_WINDOW, score, now_iso)
+                for bcode, score in due
+            ],
+        )
+        conn.commit()
+        return {
+            "snap_products": len(bills),
+            "stale": len(stale),
+            "pending": len(due),
+            "skipped_running": 0,
+        }
+    finally:
+        conn.close()
+
+
 def claim_next_delta(
     *, site: str | None, snap_id: str, window: str = DELTA_WINDOW
 ) -> dict[str, Any] | None:
@@ -798,10 +877,12 @@ def _lane_open_counts(
 
 
 def _take_idle_pref(conn: sqlite3.Connection) -> str:
+    from src.kcw.product_insight_qtymin import IDLE_KINDS
+
     init_insights_schema(conn)
     row = conn.execute("SELECT kind FROM idle_pref WHERE id=1").fetchone()
-    current = str(row["kind"]) if row and row["kind"] in ("syp", "qtymin") else "syp"
-    nxt = "qtymin" if current == "syp" else "syp"
+    current = str(row["kind"]) if row and row["kind"] in IDLE_KINDS else "syp"
+    nxt = IDLE_KINDS[(IDLE_KINDS.index(current) + 1) % len(IDLE_KINDS)]
     conn.execute(
         """
         INSERT INTO idle_pref (id, kind) VALUES (1, ?)
@@ -837,8 +918,8 @@ def _mark_idle_synced(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def _maybe_sync_idle_queues(snap_id: str) -> None:
-    """Build the SYP insight queue and the QTYMIN queue when both are drained."""
+def _maybe_sync_idle_queues(snap_id: str, *, target_model: str) -> None:
+    """Build SYP delta, QTYMIN, and GLM rebackfill queues when each lane is drained."""
     from src.kcw.product_insight_qtymin import QTYMIN_WINDOW, sync_qtymin_queue
 
     with _delta_rebuild_lock() as got:
@@ -855,6 +936,9 @@ def _maybe_sync_idle_queues(snap_id: str) -> None:
             qty_pending, qty_running = _lane_open_counts(
                 conn, snap_id=snap_id, window=QTYMIN_WINDOW, site=None
             )
+            reb_pending, reb_running = _lane_open_counts(
+                conn, snap_id=snap_id, window=REBACKFILL_WINDOW, site=None
+            )
         finally:
             conn.close()
         if syp_running == 0 and syp_pending == 0:
@@ -868,6 +952,17 @@ def _maybe_sync_idle_queues(snap_id: str) -> None:
             for branch in ("hq", "syp"):
                 reviewed = sync_qtymin_queue(site=branch, snap_id=snap_id)
                 print(f"worker: qtymin sync site={branch} {reviewed}", flush=True)
+        if reb_running == 0 and reb_pending == 0:
+            for branch in ("hq", "syp"):
+                counts = sync_rebackfill_queue(
+                    site=branch, snap_id=snap_id, target_model=target_model
+                )
+                print(
+                    f"worker: glm-rebackfill sync site={branch} "
+                    f"stale={counts['stale']} pending={counts['pending']} "
+                    f"skipped_running={counts.get('skipped_running', 0)}",
+                    flush=True,
+                )
         conn = connect_insights()
         try:
             _mark_idle_synced(conn)
@@ -882,14 +977,18 @@ def _run_one_idle_job(
     lease_minutes: int,
     max_retries: int,
 ) -> bool:
-    """Claim one SYP insight or one QTYMIN review. False when both lanes are idle."""
+    """Claim one idle job: SYP insight, QTYMIN, or GLM rebackfill (HQ/SYP)."""
     from src.kcw.product_insight_qtymin import QTYMIN_WINDOW, pick_idle_kind, run_qtymin_model
 
-    _maybe_sync_idle_queues(snap_id)
+    _maybe_sync_idle_queues(snap_id, target_model=model)
     conn = connect_insights()
     try:
         init_insights_schema(conn)
-        for branch, window in (("syp", DELTA_WINDOW), (None, QTYMIN_WINDOW)):
+        for branch, window in (
+            ("syp", DELTA_WINDOW),
+            (None, QTYMIN_WINDOW),
+            (None, REBACKFILL_WINDOW),
+        ):
             reclaim_stale_leases(
                 site=branch or "hq",
                 snap_id=snap_id,
@@ -909,17 +1008,26 @@ def _run_one_idle_job(
         qty_pending, _qty_running = _lane_open_counts(
             conn, snap_id=snap_id, window=QTYMIN_WINDOW, site=None
         )
+        reb_pending, _reb_running = _lane_open_counts(
+            conn, snap_id=snap_id, window=REBACKFILL_WINDOW, site=None
+        )
         prefer = _take_idle_pref(conn)
     finally:
         conn.close()
     kind, _nxt = pick_idle_kind(
-        prefer, syp_pending=syp_pending > 0, qtymin_pending=qty_pending > 0
+        prefer,
+        syp_pending=syp_pending > 0,
+        qtymin_pending=qty_pending > 0,
+        rebackfill_pending=reb_pending > 0,
     )
     if kind is None:
         return False
     if kind == "syp":
         item = claim_next_delta(site="syp", snap_id=snap_id, window=DELTA_WINDOW)
-        if item is None or item.get("_contended"):
+        if item is not None and item.get("_contended"):
+            time.sleep(1)
+            return True
+        if item is None:
             return False
         bcode = str(item["bcode"])
         print(
@@ -954,36 +1062,80 @@ def _run_one_idle_job(
             )
         return True
 
-    item = claim_next_delta(site=None, snap_id=snap_id, window=QTYMIN_WINDOW)
-    if item is None or item.get("_contended"):
+    if kind == "qtymin":
+        item = claim_next_delta(site=None, snap_id=snap_id, window=QTYMIN_WINDOW)
+        if item is not None and item.get("_contended"):
+            time.sleep(1)
+            return True
+        if item is None:
+            return False
+        bcode = str(item["bcode"])
+        branch = str(item["site"])
+        print(
+            f"worker: claim qtymin {branch} {bcode} score={item.get('movement_score')}",
+            flush=True,
+        )
+        try:
+            res = run_qtymin_model(
+                site=branch,
+                bcode=bcode,
+                snap_id=snap_id,
+                insight_generated_at=item.get("facts_as_of"),
+                model=model,
+            )
+            print(
+                f"worker: qtymin {branch} {bcode} {res['elapsed_s']}s :: {(res.get('summary') or '')[:80]}",
+                flush=True,
+            )
+        except Exception as exc:
+            err = f"{type(exc).__name__}: {exc}"
+            print(f"worker: ERROR qtymin {branch} {bcode}: {err}", flush=True)
+            traceback.print_exc()
+            _mark_error(
+                site=branch,
+                bcode=bcode,
+                snap_id=snap_id,
+                window=QTYMIN_WINDOW,
+                error=err,
+                max_retries=max_retries,
+            )
+        return True
+
+    item = claim_next_delta(site=None, snap_id=snap_id, window=REBACKFILL_WINDOW)
+    if item is not None and item.get("_contended"):
+        time.sleep(1)
+        return True
+    if item is None:
         return False
     bcode = str(item["bcode"])
     branch = str(item["site"])
     print(
-        f"worker: claim qtymin {branch} {bcode} score={item.get('movement_score')}",
+        f"worker: claim glm-rebackfill {branch} {bcode} score={item.get('movement_score')}",
         flush=True,
     )
     try:
-        res = run_qtymin_model(
+        res = generate_one(
             site=branch,
             bcode=bcode,
             snap_id=snap_id,
-            insight_generated_at=item.get("facts_as_of"),
+            window=REBACKFILL_WINDOW,
+            facts_as_of=item.get("facts_as_of") or utc_now_iso(),
+            prompt=load_prompt(branch),
             model=model,
         )
         print(
-            f"worker: qtymin {branch} {bcode} {res['elapsed_s']}s :: {(res.get('summary') or '')[:80]}",
+            f"worker: glm-rebackfill {branch} {bcode} {res['elapsed_s']}s :: {(res.get('summary') or '')[:80]}",
             flush=True,
         )
     except Exception as exc:
         err = f"{type(exc).__name__}: {exc}"
-        print(f"worker: ERROR qtymin {branch} {bcode}: {err}", flush=True)
+        print(f"worker: ERROR glm-rebackfill {branch} {bcode}: {err}", flush=True)
         traceback.print_exc()
         _mark_error(
             site=branch,
             bcode=bcode,
             snap_id=snap_id,
-            window=QTYMIN_WINDOW,
+            window=REBACKFILL_WINDOW,
             error=err,
             max_retries=max_retries,
         )

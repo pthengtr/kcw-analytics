@@ -90,16 +90,26 @@ def review_is_due(
     return existing.get("insight_generated_at") != insight_generated_at
 
 
+IDLE_KINDS = ("syp", "qtymin", "rebackfill")
+
+
 def pick_idle_kind(
     prefer: str,
     *,
     syp_pending: bool,
     qtymin_pending: bool,
+    rebackfill_pending: bool = False,
 ) -> tuple[str | None, str]:
-    """Choose syp insight or qtymin, then flip the preference for the next claim."""
-    nxt = "qtymin" if prefer != "qtymin" else "syp"
-    order = ("syp", "qtymin") if prefer != "qtymin" else ("qtymin", "syp")
-    open_kind = {"syp": syp_pending, "qtymin": qtymin_pending}
+    """Choose syp / qtymin / glm-rebackfill, then advance the preference."""
+    prefer = prefer if prefer in IDLE_KINDS else "syp"
+    idx = IDLE_KINDS.index(prefer)
+    nxt = IDLE_KINDS[(idx + 1) % len(IDLE_KINDS)]
+    order = IDLE_KINDS[idx:] + IDLE_KINDS[:idx]
+    open_kind = {
+        "syp": syp_pending,
+        "qtymin": qtymin_pending,
+        "rebackfill": rebackfill_pending,
+    }
     for kind in order:
         if open_kind[kind]:
             return kind, nxt
