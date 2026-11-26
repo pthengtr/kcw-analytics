@@ -354,14 +354,19 @@ def _write(site: str, rows: list[Built], rebuilt_at: datetime) -> None:
                         alloc.unit_cost,
                     )
                 )
+    # PK is (site, sidet_id). Delete by bcode for a full product replace, and
+    # also by sidet_id so a PARTS9 bcode change cannot leave a stale row that
+    # blocks COPY under the new bcode.
+    sidet_ids = [row[1] for row in sales]
     with psycopg.connect(supabase_db_url(), connect_timeout=20) as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
                 DELETE FROM fifo.sale_cost
-                WHERE site = %s AND bcode = ANY(%s)
+                WHERE site = %s
+                  AND (bcode = ANY(%s) OR sidet_id = ANY(%s))
                 """,
-                (site, bcodes),
+                (site, bcodes, sidet_ids),
             )
             cur.executemany(
                 """
